@@ -2,23 +2,29 @@ using UnityEngine;
 using System.Collections.Generic;
 
 /// <summary>
-/// 倉庫ロボット用フェロモンシステム (床グリッド × 棚別レイヤー)
+/// 倉庫ロボット用フェロモンシステム (入口 × 棚 × 出口 レイヤー)
 ///
 /// ■ 概要:
-///   倉庫の床全体をグリッドに分割し、棚ごとに独立したフェロモンマップを持つ。
-///   エージェントが移動するたびに「自分のターゲット棚のマップ」上の
-///   現在セルにフェロモンを分泌する。
+///   タスクフローの2フェーズを独立したフェロモンマップで管理する。
 ///
-///   同じ棚を目指す後続エージェントがフェロモンの濃いセルを通ると
-///   報酬が得られる → 成功ルートが自然に強化される (ACO方式)。
+///   ・DELIVERING (入口→棚) :
+///       pheroDelivering[eIdx * shelfCount + sIdx][cellIdx]
+///       「入口 eIdx から出発して棚 sIdx を目指すルート」を強化
 ///
-/// ■ 毎ステップの処理 (Agent.OnActionReceived から呼ぶ):
-///   1. 現在セルの（ターゲット棚の）フェロモン値を取得
-///   2. 報酬 = log(pheromoneValue + 1) * rewardScale
-///   3. セルにフェロモンを pheroQ 分加算
+///   ・RETURNING (棚→出口) :
+///       pheroReturning[sIdx * exitCount + eIdx][cellIdx]
+///       「棚 sIdx から出口 eIdx へ戻るルート」を強化
 ///
-/// ■ 蒸発:
-///   evapInterval FixedUpdate ごとに全マップの全セルを (1 - evapRate) 倍
+///   ※入口と出口は同じドアを使うため exitCount == entranceCount
+///
+/// ■ データ構造:
+///   Dictionary を廃止し、フラット float[][] + インデックス計算に変更。
+///   グリッドも 2D 配列ではなく 1D 配列 (ci * gridD + cj) に統一し
+///   キャッシュ効率を高める。
+///
+/// ■ メモリ試算 (Huge プリセット: 棚140, 入口4, グリッド40×50):
+///   Delivering: 4 × 140 × 2000 × 4B ≒ 4.5 MB
+///   Returning : 同上                  ≒ 4.5 MB  合計 ≒ 9 MB
 ///
 /// ■ セットアップ:
 ///   TrainingManager と同じ GameObject にアタッチ。
@@ -55,6 +61,12 @@ public class WarehousePheromone : MonoBehaviour
     [Tooltip("ランタイムでフェロモンを床に表示する")]
     public bool visualize = true;
 
+    [Tooltip("表示フェーズ (true=Delivering 入口→棚, false=Returning 棚→出口)")]
+    public bool visualizeDelivering = true;
+
+    [Tooltip("表示する入口/出口 インデックス (-1=全合算)")]
+    public int visualizeEntranceIndex = -1;
+
     [Tooltip("表示する棚 (null=全棚合算)")]
     public ShelfUnit visualizeShelf;
 
@@ -68,32 +80,43 @@ public class WarehousePheromone : MonoBehaviour
     public Color vizColorHigh = new Color(1f, 0.3f, 0f, 0.7f);
 
     // ==========================================
-    //  内部変数
+    //  内部変数 — グリッド
     // ==========================================
-
-    // グリッドサイズ
-    private int gridW;
-    private int gridD;
+    private int   gridW;
+    private int   gridD;
+    private int   cellCount;   // gridW * gridD
     private float warehouseW;
     private float warehouseD;
     private Transform genTransform;
 
-    // 棚ごとのフェロモンマップ
-    private Dictionary<ShelfUnit, float[,]> pheroMaps = new Dictionary<ShelfUnit, float[,]>();
+    // ==========================================
+    //  内部変数 — フェロモンマップ
+    //
+    //  pheroDelivering[eIdx * shelfCount + sIdx][ci * gridD + cj]
+    //  pheroReturning [sIdx * exitCount  + eIdx][ci * gridD + cj]
+    // ==========================================
+    private float[][] pheroDelivering;
+    private float[][] pheroReturning;
 
-    // 全棚リスト
-    private List<ShelfUnit> allShelves = new List<ShelfUnit>();
+    private int entranceCount;  // 入口の総数
+    private int exitCount;      // 出口の総数 (== entranceCount)
+    private int shelfCount;     // 棚の総数
 
-    private int tickCount = 0;
+    private List<ShelfUnit>           allShelves    = new List<ShelfUnit>();
+    private Dictionary<ShelfUnit,int> shelfIndexMap = new Dictionary<ShelfUnit,int>();
+
+    private int  tickCount   = 0;
     private bool initialized = false;
 
-    // 可視化タイル
-    private GameObject vizParent;
-    private Renderer[,] vizTiles;
-    private Material vizMaterial;
+    // ==========================================
+    //  可視化タイル
+    // ==========================================
+    private GameObject            vizParent;
+    private Renderer[]            vizTiles;      // [ci * gridD + cj] — 1Dフラット
+    private Material              vizMaterial;
     private MaterialPropertyBlock vizPropBlock;
-    private int vizFrameCount = 0;
-    private static readonly int ColorID = Shader.PropertyToID("_Color");
+    private int                   vizFrameCount = 0;
+    private static readonly int   ColorID = Shader.PropertyToID("_Color");
 
     // ==========================================
     //  初期化
@@ -102,13 +125,12 @@ public class WarehousePheromone : MonoBehaviour
     {
         if (initialized) return;
 
-        // warehouseGenerator 自動検出
+        // WarehouseGenerator 自動検出
         if (warehouseGenerator == null)
         {
             var tm = GetComponent<WarehouseTrainingManager>();
             if (tm != null) warehouseGenerator = tm.warehouseGenerator;
         }
-
         if (warehouseGenerator == null)
         {
             Debug.LogWarning("[Pheromone] WarehouseGenerator が未設定です");
@@ -119,39 +141,105 @@ public class WarehousePheromone : MonoBehaviour
             warehouseGenerator.Generate();
 
         genTransform = warehouseGenerator.transform;
-        warehouseW = warehouseGenerator.warehouseWidth;
-        warehouseD = warehouseGenerator.warehouseDepth;
+        warehouseW   = warehouseGenerator.warehouseWidth;
+        warehouseD   = warehouseGenerator.warehouseDepth;
 
-        // グリッドサイズ計算
         cellSize = Mathf.Max(0.5f, cellSize);
-        gridW = Mathf.CeilToInt(warehouseW / cellSize);
-        gridD = Mathf.CeilToInt(warehouseD / cellSize);
+        gridW     = Mathf.CeilToInt(warehouseW / cellSize);
+        gridD     = Mathf.CeilToInt(warehouseD / cellSize);
+        cellCount = gridW * gridD;
 
-        // 棚収集 + マップ初期化
+        // 入口数 (TrainingManager の CalculateEntrances と同じ順序)
+        entranceCount = CalcEntranceCount();
+        exitCount     = entranceCount;
+
+        // 棚収集 + マップ確保
         CollectShelves();
 
         initialized = true;
 
-        // 可視化タイルを生成 (trainingMode 時はスキップ)
+        // 可視化タイル生成
         if (visualize && WarehousePerformance.IsEnabled(p => p.ShelfHighlight))
             CreateVisualizationTiles();
 
         if (WarehousePerformance.IsEnabled(p => p.DebugLog))
-            Debug.Log($"[Pheromone] 初期化完了 — グリッド: {gridW}x{gridD} (cell={cellSize}m), 棚レイヤー: {allShelves.Count}");
+            Debug.Log($"[Pheromone] 初期化完了 — グリッド:{gridW}×{gridD} (cell={cellSize}m) " +
+                      $"入口:{entranceCount} 棚:{shelfCount} " +
+                      $"Delivering:{pheroDelivering.Length}マップ " +
+                      $"Returning:{pheroReturning.Length}マップ");
     }
 
+    // ==========================================
+    //  入口数計算 (TrainingManager.CalculateEntrances と同順)
+    // ==========================================
+    int CalcEntranceCount()
+    {
+        if (warehouseGenerator == null) return 1;
+        int count = 0;
+        if (warehouseGenerator.doorWest)  count++;
+        if (warehouseGenerator.doorEast)  count++;
+        if (warehouseGenerator.doorSouth) count++;
+        if (warehouseGenerator.doorNorth) count++;
+        return Mathf.Max(1, count);
+    }
+
+    // ==========================================
+    //  棚収集 + マップ確保
+    // ==========================================
     void CollectShelves()
     {
         allShelves.Clear();
-        pheroMaps.Clear();
+        shelfIndexMap.Clear();
 
         allShelves.AddRange(warehouseGenerator.GetComponentsInChildren<ShelfUnit>());
 
-        foreach (var shelf in allShelves)
+        for (int i = 0; i < allShelves.Count; i++)
         {
-            if (shelf != null)
-                pheroMaps[shelf] = new float[gridW, gridD];
+            if (allShelves[i] != null)
+                shelfIndexMap[allShelves[i]] = i;
         }
+        shelfCount = allShelves.Count;
+
+        // フラット配列を確保
+        // Delivering: [entranceCount × shelfCount] マップ
+        int delCount = entranceCount * Mathf.Max(1, shelfCount);
+        pheroDelivering = new float[delCount][];
+        for (int i = 0; i < delCount; i++)
+            pheroDelivering[i] = new float[cellCount];
+
+        // Returning: [shelfCount × exitCount] マップ
+        int retCount = Mathf.Max(1, shelfCount) * exitCount;
+        pheroReturning = new float[retCount][];
+        for (int i = 0; i < retCount; i++)
+            pheroReturning[i] = new float[cellCount];
+    }
+
+    // ==========================================
+    //  インデックス計算ヘルパー
+    // ==========================================
+
+    /// <summary> pheroDelivering のインデックス </summary>
+    int DeliveringKey(int eIdx, int sIdx)
+        => Mathf.Clamp(eIdx, 0, entranceCount - 1) * shelfCount
+         + Mathf.Clamp(sIdx, 0, shelfCount - 1);
+
+    /// <summary> pheroReturning のインデックス </summary>
+    int ReturningKey(int sIdx, int xIdx)
+        => Mathf.Clamp(sIdx, 0, shelfCount - 1) * exitCount
+         + Mathf.Clamp(xIdx, 0, exitCount - 1);
+
+    // ==========================================
+    //  公開: 棚インデックス取得
+    // ==========================================
+
+    /// <summary>
+    /// ShelfUnit → pheroDelivering / pheroReturning のインデックス
+    /// 見つからない場合は -1
+    /// </summary>
+    public int GetShelfIndex(ShelfUnit shelf)
+    {
+        if (shelf == null) return -1;
+        return shelfIndexMap.TryGetValue(shelf, out int idx) ? idx : -1;
     }
 
     // ==========================================
@@ -159,27 +247,23 @@ public class WarehousePheromone : MonoBehaviour
     // ==========================================
 
     /// <summary>
-    /// ワールド座標 → グリッドインデックス (i, j)
-    /// 範囲外の場合は (-1, -1)
+    /// ワールド座標 → グリッドインデックス (ci, cj)
+    /// 範囲外なら (-1, -1)
     /// </summary>
-    void WorldToGrid(Vector3 worldPos, out int i, out int j)
+    void WorldToGrid(Vector3 worldPos, out int ci, out int cj)
     {
-        // Generator のローカル空間に変換
         Vector3 local = genTransform.InverseTransformPoint(worldPos);
-
-        i = Mathf.FloorToInt(local.x / cellSize);
-        j = Mathf.FloorToInt(local.z / cellSize);
-
-        // 範囲外チェック
-        if (i < 0 || i >= gridW || j < 0 || j >= gridD)
+        ci = Mathf.FloorToInt(local.x / cellSize);
+        cj = Mathf.FloorToInt(local.z / cellSize);
+        if (ci < 0 || ci >= gridW || cj < 0 || cj >= gridD)
         {
-            i = -1;
-            j = -1;
+            ci = -1;
+            cj = -1;
         }
     }
 
     // ==========================================
-    //  蒸発
+    //  蒸発 (FixedUpdate)
     // ==========================================
     void FixedUpdate()
     {
@@ -187,26 +271,232 @@ public class WarehousePheromone : MonoBehaviour
 
         tickCount++;
         if (evapInterval > 0 && tickCount % evapInterval == 0)
-        {
             Evaporate();
-        }
     }
 
     void Evaporate()
     {
         float factor = 1f - evapRate;
-        foreach (var kvp in pheroMaps)
+        EvaporateMaps(pheroDelivering, factor);
+        EvaporateMaps(pheroReturning,  factor);
+    }
+
+    static void EvaporateMaps(float[][] maps, float factor)
+    {
+        if (maps == null) return;
+        for (int m = 0; m < maps.Length; m++)
         {
-            float[,] map = kvp.Value;
-            for (int i = 0; i < gridW; i++)
+            float[] map = maps[m];
+            if (map == null) continue;
+            for (int i = 0; i < map.Length; i++)
             {
-                for (int j = 0; j < gridD; j++)
-                {
-                    map[i, j] *= factor;
-                    if (map[i, j] < 0.001f) map[i, j] = 0f;
-                }
+                map[i] *= factor;
+                if (map[i] < 0.001f) map[i] = 0f;
             }
         }
+    }
+
+    // ==========================================
+    //  毎ステップ処理 (Agent.OnActionReceived から呼ぶ)
+    // ==========================================
+
+    /// <summary>
+    /// エージェントの現在位置にフェロモンを分泌し、報酬を返す。
+    ///
+    /// <para>DELIVERING フェーズ: pheroDelivering[eIdx * shelfCount + sIdx] に記録</para>
+    /// <para>RETURNING  フェーズ: pheroReturning [sIdx * exitCount  + xIdx] に記録</para>
+    ///
+    /// 呼び出し条件:
+    ///   isDelivering=true  → entranceIdx と shelfIdx が有効 (>= 0)
+    ///   isDelivering=false → shelfIdx と exitIdx が有効 (>= 0)
+    /// </summary>
+    /// <param name="worldPos">エージェントのワールド座標</param>
+    /// <param name="isDelivering">true=DELIVERINGフェーズ / false=RETURNINGフェーズ</param>
+    /// <param name="entranceIdx">スポーン入口インデックス (TrainingManager.entrances の順)</param>
+    /// <param name="shelfIdx">ターゲット棚インデックス (GetShelfIndex で取得)</param>
+    /// <param name="exitIdx">帰還出口インデックス (TrainingManager.entrances の順)</param>
+    /// <returns>フェロモン報酬 (log(prevValue+1) * rewardScale)</returns>
+    public float StepPheromone(Vector3 worldPos, bool isDelivering,
+                                int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        EnsureInitialized();
+        if (!initialized || shelfCount == 0) return 0f;
+
+        WorldToGrid(worldPos, out int ci, out int cj);
+        if (ci < 0) return 0f;
+
+        int cellIdx = ci * gridD + cj;
+        float[] map;
+
+        if (isDelivering)
+        {
+            if (entranceIdx < 0 || shelfIdx < 0) return 0f;
+            map = pheroDelivering[DeliveringKey(entranceIdx, shelfIdx)];
+        }
+        else
+        {
+            if (shelfIdx < 0 || exitIdx < 0) return 0f;
+            map = pheroReturning[ReturningKey(shelfIdx, exitIdx)];
+        }
+
+        float prev   = map[cellIdx];
+        float reward = Mathf.Log(prev + 1f) * rewardScale;
+        map[cellIdx] = prev + pheroQ;
+
+        return reward;
+    }
+
+    // ==========================================
+    //  参照用メソッド
+    // ==========================================
+
+    /// <summary>
+    /// 指定したマップ・位置のフェロモン値を取得
+    /// </summary>
+    public float GetValue(Vector3 worldPos, bool isDelivering,
+                          int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        if (!initialized || shelfCount == 0) return 0f;
+
+        WorldToGrid(worldPos, out int ci, out int cj);
+        if (ci < 0) return 0f;
+
+        int cellIdx = ci * gridD + cj;
+        float[] map;
+
+        if (isDelivering)
+        {
+            if (entranceIdx < 0 || shelfIdx < 0) return 0f;
+            map = pheroDelivering[DeliveringKey(entranceIdx, shelfIdx)];
+        }
+        else
+        {
+            if (shelfIdx < 0 || exitIdx < 0) return 0f;
+            map = pheroReturning[ReturningKey(shelfIdx, exitIdx)];
+        }
+
+        return map[cellIdx];
+    }
+
+    /// <summary>
+    /// 全マップのフェロモンを 0 にリセット
+    /// </summary>
+    public void ResetAll()
+    {
+        ClearMaps(pheroDelivering);
+        ClearMaps(pheroReturning);
+        tickCount = 0;
+    }
+
+    static void ClearMaps(float[][] maps)
+    {
+        if (maps == null) return;
+        for (int m = 0; m < maps.Length; m++)
+            if (maps[m] != null)
+                System.Array.Clear(maps[m], 0, maps[m].Length);
+    }
+
+    /// <summary>
+    /// 指定した Delivering マップの最大フェロモン値
+    /// </summary>
+    public float GetMaxValueDelivering(int entranceIdx, int shelfIdx)
+    {
+        if (!initialized || shelfCount == 0) return 0f;
+        return MaxOfMap(pheroDelivering[DeliveringKey(entranceIdx, shelfIdx)]);
+    }
+
+    /// <summary>
+    /// 指定した Returning マップの最大フェロモン値
+    /// </summary>
+    public float GetMaxValueReturning(int shelfIdx, int exitIdx)
+    {
+        if (!initialized || shelfCount == 0) return 0f;
+        return MaxOfMap(pheroReturning[ReturningKey(shelfIdx, exitIdx)]);
+    }
+
+    // ==========================================
+    //  デバッガー向け公開API
+    // ==========================================
+
+    /// <summary> 入口/出口の総数 </summary>
+    public int EntranceCount => initialized ? entranceCount : 0;
+
+    /// <summary> 棚の総数 </summary>
+    public int ShelfCount => initialized ? shelfCount : 0;
+
+    /// <summary> 出口の総数 (== EntranceCount) </summary>
+    public int ExitCount => initialized ? exitCount : 0;
+
+    /// <summary> 初期化済みかどうか </summary>
+    public bool IsInitialized => initialized;
+
+    /// <summary>
+    /// インデックスから ShelfUnit を取得
+    /// </summary>
+    public ShelfUnit GetShelfByIndex(int sIdx)
+    {
+        if (!initialized || sIdx < 0 || sIdx >= allShelves.Count) return null;
+        return allShelves[sIdx];
+    }
+
+    /// <summary>
+    /// Delivering マップ [eIdx × shelfCount + sIdx] の統計を返す。
+    /// </summary>
+    /// <returns>(合計フェロモン, 最大値, 非ゼロセル数)</returns>
+    public (float total, float max, int activeCells) GetDeliveringMapStats(int eIdx, int sIdx)
+    {
+        if (!initialized || shelfCount == 0)
+            return (0f, 0f, 0);
+        return CalcMapStats(pheroDelivering[DeliveringKey(eIdx, sIdx)]);
+    }
+
+    /// <summary>
+    /// Returning マップ [sIdx × exitCount + xIdx] の統計を返す。
+    /// </summary>
+    /// <returns>(合計フェロモン, 最大値, 非ゼロセル数)</returns>
+    public (float total, float max, int activeCells) GetReturningMapStats(int sIdx, int xIdx)
+    {
+        if (!initialized || shelfCount == 0)
+            return (0f, 0f, 0);
+        return CalcMapStats(pheroReturning[ReturningKey(sIdx, xIdx)]);
+    }
+
+    static (float total, float max, int activeCells) CalcMapStats(float[] map)
+    {
+        if (map == null) return (0f, 0f, 0);
+        float total = 0f, max = 0f;
+        int active = 0;
+        for (int i = 0; i < map.Length; i++)
+        {
+            float v = map[i];
+            if (v > 0.001f)
+            {
+                total += v;
+                active++;
+                if (v > max) max = v;
+            }
+        }
+        return (total, max, active);
+    }
+
+    /// <summary>
+    /// WarehousePheromone の可視化ターゲットをデバッガーから上書きする。
+    /// Delivering / Returning いずれかのマップを Inspector と同じ方法で選択する。
+    /// </summary>
+    public void SetVizTarget(bool isDelivering, int eOrXIdx, ShelfUnit shelf)
+    {
+        visualizeDelivering    = isDelivering;
+        visualizeEntranceIndex = eOrXIdx;
+        visualizeShelf         = shelf;
+    }
+
+    static float MaxOfMap(float[] map)
+    {
+        if (map == null) return 0f;
+        float max = 0f;
+        for (int i = 0; i < map.Length; i++)
+            if (map[i] > max) max = map[i];
+        return max;
     }
 
     // ==========================================
@@ -219,9 +509,8 @@ public class WarehousePheromone : MonoBehaviour
         vizParent = new GameObject("PheromoneViz");
         vizParent.transform.SetParent(genTransform, false);
 
-        // 半透明マテリアル (全タイル共有)
         vizMaterial = new Material(Shader.Find("Standard"));
-        vizMaterial.SetFloat("_Mode", 3); // Transparent
+        vizMaterial.SetFloat("_Mode", 3);
         vizMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
         vizMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
         vizMaterial.SetInt("_ZWrite", 0);
@@ -229,54 +518,48 @@ public class WarehousePheromone : MonoBehaviour
         vizMaterial.EnableKeyword("_ALPHABLEND_ON");
         vizMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
         vizMaterial.renderQueue = 3000;
-        vizMaterial.color = new Color(0, 0, 0, 0); // 初期は透明
+        vizMaterial.color = Color.clear;
 
-        vizTiles = new Renderer[gridW, gridD];
+        // タイルを1Dフラット配列で管理 (ci * gridD + cj)
+        vizTiles    = new Renderer[cellCount];
         vizPropBlock = new MaterialPropertyBlock();
 
-        float tileY = 0.02f; // 床のすぐ上
+        float tileY = 0.02f;
 
-        for (int i = 0; i < gridW; i++)
+        for (int ci = 0; ci < gridW; ci++)
         {
-            for (int j = 0; j < gridD; j++)
+            for (int cj = 0; cj < gridD; cj++)
             {
                 var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
-                quad.name = $"PheroTile_{i}_{j}";
+                quad.name = $"PheroTile_{ci}_{cj}";
                 quad.transform.SetParent(vizParent.transform, false);
 
-                // Quad は Y+ 方向を向いているので X軸で90度回転して床に寝かせる
-                float lx = i * cellSize + cellSize / 2f;
-                float lz = j * cellSize + cellSize / 2f;
+                float lx = ci * cellSize + cellSize * 0.5f;
+                float lz = cj * cellSize + cellSize * 0.5f;
                 quad.transform.localPosition = new Vector3(lx, tileY, lz);
                 quad.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-                quad.transform.localScale = new Vector3(cellSize * 0.95f, cellSize * 0.95f, 1f);
+                quad.transform.localScale    = new Vector3(cellSize * 0.95f, cellSize * 0.95f, 1f);
 
-                // Collider 削除 (レイキャストに干渉させない)
                 Destroy(quad.GetComponent<Collider>());
 
-                // 影なし
                 var rend = quad.GetComponent<Renderer>();
                 rend.material = vizMaterial;
                 rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                rend.receiveShadows = false;
+                rend.receiveShadows    = false;
 
-                vizTiles[i, j] = rend;
+                vizTiles[ci * gridD + cj] = rend;
             }
         }
     }
 
     void DestroyVisualizationTiles()
     {
-        if (vizParent != null)
-        {
-            Destroy(vizParent);
-            vizParent = null;
-        }
+        if (vizParent != null) { Destroy(vizParent); vizParent = null; }
         vizTiles = null;
     }
 
     // ==========================================
-    //  可視化: 色の更新 (LateUpdate で数フレームごと)
+    //  可視化: 色の更新
     // ==========================================
     void LateUpdate()
     {
@@ -290,59 +573,89 @@ public class WarehousePheromone : MonoBehaviour
 
     void UpdateVisualization()
     {
-        // 表示対象のマップを合算
-        float[,] displayMap = new float[gridW, gridD];
-        float maxVal = 0f;
+        // 表示用の合算バッファ (スタック上の仮配列を避け、毎回 new せず使い回す)
+        float[] displayMap = new float[cellCount];
+        float   maxVal     = 0f;
 
-        if (visualizeShelf != null && pheroMaps.ContainsKey(visualizeShelf))
+        if (visualizeDelivering)
+            AggregateForViz(pheroDelivering, true, displayMap, ref maxVal);
+        else
+            AggregateForViz(pheroReturning, false, displayMap, ref maxVal);
+
+        // タイルの色を更新
+        for (int i = 0; i < cellCount; i++)
         {
-            // 特定の棚のマップだけ表示
-            float[,] map = pheroMaps[visualizeShelf];
-            for (int i = 0; i < gridW; i++)
-                for (int j = 0; j < gridD; j++)
+            Renderer rend = vizTiles[i];
+            if (rend == null) continue;
+
+            float val = displayMap[i];
+            if (val <= 0.001f)
+            {
+                vizPropBlock.SetColor(ColorID, Color.clear);
+            }
+            else
+            {
+                float norm = maxVal > 0f ? Mathf.Clamp01(val / maxVal) : 0f;
+                vizPropBlock.SetColor(ColorID, Color.Lerp(vizColorLow, vizColorHigh, norm));
+            }
+            rend.SetPropertyBlock(vizPropBlock);
+        }
+    }
+
+    /// <summary>
+    /// Inspector 設定 (visualizeEntranceIndex / visualizeShelf) に従い
+    /// maps を displayMap に合算する。
+    /// </summary>
+    void AggregateForViz(float[][] maps, bool isDelivering,
+                          float[] displayMap, ref float maxVal)
+    {
+        if (maps == null || shelfCount == 0) return;
+
+        int visualSIdx = (visualizeShelf != null)
+            ? GetShelfIndex(visualizeShelf) : -1;
+
+        if (isDelivering)
+        {
+            // pheroDelivering[eIdx * shelfCount + sIdx]
+            for (int e = 0; e < entranceCount; e++)
+            {
+                if (visualizeEntranceIndex >= 0 && e != visualizeEntranceIndex) continue;
+
+                int sStart = visualSIdx >= 0 ? visualSIdx : 0;
+                int sEnd   = visualSIdx >= 0 ? visualSIdx : shelfCount - 1;
+
+                for (int s = sStart; s <= sEnd; s++)
                 {
-                    displayMap[i, j] = map[i, j];
-                    if (map[i, j] > maxVal) maxVal = map[i, j];
+                    float[] src = maps[e * shelfCount + s];
+                    if (src == null) continue;
+                    for (int i = 0; i < cellCount; i++)
+                    {
+                        displayMap[i] += src[i];
+                        if (displayMap[i] > maxVal) maxVal = displayMap[i];
+                    }
                 }
+            }
         }
         else
         {
-            // 全棚のマップを合算
-            foreach (var kvp in pheroMaps)
+            // pheroReturning[sIdx * exitCount + xIdx]
+            int sStart = visualSIdx >= 0 ? visualSIdx : 0;
+            int sEnd   = visualSIdx >= 0 ? visualSIdx : shelfCount - 1;
+
+            for (int s = sStart; s <= sEnd; s++)
             {
-                float[,] map = kvp.Value;
-                for (int i = 0; i < gridW; i++)
-                    for (int j = 0; j < gridD; j++)
-                        displayMap[i, j] += map[i, j];
-            }
-
-            for (int i = 0; i < gridW; i++)
-                for (int j = 0; j < gridD; j++)
-                    if (displayMap[i, j] > maxVal) maxVal = displayMap[i, j];
-        }
-
-        // 色の更新
-        for (int i = 0; i < gridW; i++)
-        {
-            for (int j = 0; j < gridD; j++)
-            {
-                if (vizTiles[i, j] == null) continue;
-
-                float val = displayMap[i, j];
-
-                if (val <= 0.001f)
+                for (int x = 0; x < exitCount; x++)
                 {
-                    // フェロモンなし → 完全透明
-                    vizPropBlock.SetColor(ColorID, Color.clear);
-                }
-                else
-                {
-                    float norm = maxVal > 0f ? Mathf.Clamp01(val / maxVal) : 0f;
-                    Color col = Color.Lerp(vizColorLow, vizColorHigh, norm);
-                    vizPropBlock.SetColor(ColorID, col);
-                }
+                    if (visualizeEntranceIndex >= 0 && x != visualizeEntranceIndex) continue;
 
-                vizTiles[i, j].SetPropertyBlock(vizPropBlock);
+                    float[] src = maps[s * exitCount + x];
+                    if (src == null) continue;
+                    for (int i = 0; i < cellCount; i++)
+                    {
+                        displayMap[i] += src[i];
+                        if (displayMap[i] > maxVal) maxVal = displayMap[i];
+                    }
+                }
             }
         }
     }
@@ -353,153 +666,55 @@ public class WarehousePheromone : MonoBehaviour
     }
 
     // ==========================================
-    //  毎ステップ処理 (Agent.OnActionReceived から呼ぶ)
-    // ==========================================
-
-    /// <summary>
-    /// エージェントの現在位置にフェロモンを分泌し、報酬を返す。
-    ///
-    /// 1. ターゲット棚のマップ上で現在セルの値を取得
-    /// 2. 報酬を計算: log(value + 1) * rewardScale
-    /// 3. セルに pheroQ を加算
-    /// 4. 報酬値を返す
-    /// </summary>
-    /// <param name="worldPos">エージェントのワールド座標</param>
-    /// <param name="targetShelf">現在のターゲット棚</param>
-    /// <returns>フェロモン報酬 (加算用)</returns>
-    public float StepPheromone(Vector3 worldPos, ShelfUnit targetShelf)
-    {
-        EnsureInitialized();
-        if (!initialized || targetShelf == null) return 0f;
-
-        // この棚のマップを取得 (なければ作成)
-        if (!pheroMaps.ContainsKey(targetShelf))
-            pheroMaps[targetShelf] = new float[gridW, gridD];
-
-        float[,] map = pheroMaps[targetShelf];
-
-        // 座標変換
-        WorldToGrid(worldPos, out int ci, out int cj);
-        if (ci < 0) return 0f;  // 範囲外
-
-        // 加算前の値で報酬計算
-        float prevValue = map[ci, cj];
-        float reward = Mathf.Log(prevValue + 1f) * rewardScale;
-
-        // フェロモン分泌
-        map[ci, cj] += pheroQ;
-
-        return reward;
-    }
-
-    // ==========================================
-    //  参照用メソッド
-    // ==========================================
-
-    /// <summary>
-    /// 指定した棚のマップ上の、指定位置のフェロモン値を取得
-    /// </summary>
-    public float GetValue(Vector3 worldPos, ShelfUnit shelf)
-    {
-        if (!initialized || shelf == null) return 0f;
-        if (!pheroMaps.ContainsKey(shelf)) return 0f;
-
-        WorldToGrid(worldPos, out int i, out int j);
-        if (i < 0) return 0f;
-
-        return pheroMaps[shelf][i, j];
-    }
-
-    /// <summary>
-    /// 全棚・全セルのフェロモンを0にリセット
-    /// </summary>
-    public void ResetAll()
-    {
-        foreach (var kvp in pheroMaps)
-        {
-            float[,] map = kvp.Value;
-            System.Array.Clear(map, 0, map.Length);
-        }
-        tickCount = 0;
-    }
-
-    /// <summary>
-    /// 指定した棚のマップの最大フェロモン値
-    /// </summary>
-    public float GetMaxValue(ShelfUnit shelf)
-    {
-        if (shelf == null || !pheroMaps.ContainsKey(shelf)) return 0f;
-        float[,] map = pheroMaps[shelf];
-        float max = 0f;
-        for (int i = 0; i < gridW; i++)
-            for (int j = 0; j < gridD; j++)
-                if (map[i, j] > max) max = map[i, j];
-        return max;
-    }
-
-    // ==========================================
     //  ギズモ (Scene ビューでフェロモンヒートマップ表示)
-    //  選択中の棚 or 最もフェロモンが高い棚のマップを表示
+    //  Inspector の visualizeDelivering / visualizeEntranceIndex / visualizeShelf
+    //  に従い、最も合計フェロモンの高いマップを表示する。
     // ==========================================
     void OnDrawGizmosSelected()
     {
 #if UNITY_EDITOR
-        if (!initialized || pheroMaps.Count == 0 || genTransform == null) return;
+        if (!initialized || genTransform == null) return;
 
-        // 最もフェロモンが高い棚のマップを表示
-        ShelfUnit displayShelf = null;
-        float maxTotal = 0f;
-        foreach (var kvp in pheroMaps)
-        {
-            float total = 0f;
-            float[,] m = kvp.Value;
-            for (int i = 0; i < gridW; i++)
-                for (int j = 0; j < gridD; j++)
-                    total += m[i, j];
-            if (total > maxTotal)
-            {
-                maxTotal = total;
-                displayShelf = kvp.Key;
-            }
-        }
+        // 合算してヒートマップ表示
+        float[] displayMap = new float[cellCount];
+        float   maxVal     = 0f;
 
-        if (displayShelf == null || maxTotal <= 0f) return;
+        if (visualizeDelivering)
+            AggregateForViz(pheroDelivering, true, displayMap, ref maxVal);
+        else
+            AggregateForViz(pheroReturning, false, displayMap, ref maxVal);
 
-        float[,] map = pheroMaps[displayShelf];
-        float maxVal = GetMaxValue(displayShelf);
         if (maxVal <= 0f) return;
 
-        for (int i = 0; i < gridW; i++)
+        for (int ci = 0; ci < gridW; ci++)
         {
-            for (int j = 0; j < gridD; j++)
+            for (int cj = 0; cj < gridD; cj++)
             {
-                float val = map[i, j];
+                float val = displayMap[ci * gridD + cj];
                 if (val <= 0f) continue;
 
-                float norm = Mathf.Clamp01(val / maxVal);
-
-                // ローカル座標の中心
-                float lx = i * cellSize + cellSize / 2f;
-                float lz = j * cellSize + cellSize / 2f;
+                float norm   = Mathf.Clamp01(val / maxVal);
+                float lx     = ci * cellSize + cellSize * 0.5f;
+                float lz     = cj * cellSize + cellSize * 0.5f;
                 Vector3 center = genTransform.TransformPoint(new Vector3(lx, 0.05f, lz));
 
-                Color color = Color.Lerp(
+                Gizmos.color = Color.Lerp(
                     new Color(0f, 0.2f, 0.5f, 0.2f),
-                    new Color(1f, 0.4f, 0f, 0.7f),
+                    new Color(1f, 0.4f, 0f,   0.7f),
                     norm);
-
-                Gizmos.color = color;
                 Gizmos.DrawCube(center, new Vector3(cellSize * 0.9f, 0.05f, cellSize * 0.9f));
             }
         }
 
-        // ラベル: どの棚のマップを表示中か
-        if (displayShelf != null)
-        {
-            Vector3 labelPos = genTransform.TransformPoint(new Vector3(warehouseW / 2f, 3f, warehouseD / 2f));
-            UnityEditor.Handles.color = Color.yellow;
-            UnityEditor.Handles.Label(labelPos, $"Pheromone: {displayShelf.shelfID} (max={maxVal:F1})");
-        }
+        // ラベル
+        string phase  = visualizeDelivering ? "Delivering" : "Returning";
+        string eLabel = visualizeEntranceIndex < 0 ? "All" : visualizeEntranceIndex.ToString();
+        string sLabel = visualizeShelf != null ? visualizeShelf.shelfID : "All";
+        Vector3 labelPos = genTransform.TransformPoint(
+            new Vector3(warehouseW * 0.5f, 3f, warehouseD * 0.5f));
+        UnityEditor.Handles.color = Color.yellow;
+        UnityEditor.Handles.Label(labelPos,
+            $"Pheromone [{phase}] Entrance:{eLabel} Shelf:{sLabel} (max={maxVal:F1})");
 #endif
     }
 }

@@ -131,6 +131,19 @@ public class WarehouseRobotAgent : Agent
     public int crashToWall = 0;
     [HideInInspector]
     public int crashToAgent = 0;
+
+    // ==========================================
+    //  フェロモン用: 入口・出口インデックス
+    //  TrainingManager.ResetEpisode / OnEpisodeBegin で設定される。
+    //  WarehousePheromone.StepPheromone に渡し、
+    //  「どの入口から → どの棚 → どの出口へ」のルートを強化する。
+    // ==========================================
+    [HideInInspector]
+    public int spawnEntranceIndex = 0;  // スポーン入口インデックス (DELIVERING で使用)
+
+    [HideInInspector]
+    public int targetExitIndex = 0;     // 帰還出口インデックス (RETURNING で使用)
+
     // ==========================================
     //  内部変数
     // ==========================================
@@ -141,6 +154,7 @@ public class WarehouseRobotAgent : Agent
     private Renderer robotRenderer;
     private Color originalRobotColor;
     private float episodeTimer;
+
     // レイキャストセンサー
     private WarehouseObservations raySensor;
 
@@ -148,8 +162,12 @@ public class WarehouseRobotAgent : Agent
     private float fieldWidth = 30f;
     private float fieldDepth = 40f;
 
-    // 帰還フェーズのターゲット出口 (荷物を置いた時にランダム選択)
+    // 帰還フェーズのターゲット出口
     private Vector3 targetExitPosition;
+
+    // フェロモン: 荷物を置いた棚のインデックス (RETURNINGフェーズで使用)
+    // CompleteDrop 時に GetShelfIndex で取得しておく
+    private int lastDroppedShelfIndex = -1;
 
     // シェーピング報酬: エピソード中の最短距離記録
     private float bestDistToShelf = float.MaxValue;
@@ -190,10 +208,8 @@ public class WarehouseRobotAgent : Agent
         rb.drag = robotDrag;
         rb.angularDrag = robotAngularDrag;
 
-        // --- 引っかかり防止: CapsuleCollider + 低摩擦マテリアル ---
         SetupSmoothCollider();
 
-        // DecisionRequester 自動追加
         var dr = GetComponent<Unity.MLAgents.DecisionRequester>();
         if (dr == null)
         {
@@ -205,7 +221,6 @@ public class WarehouseRobotAgent : Agent
         if (robotRenderer != null)
             originalRobotColor = robotRenderer.material.color;
 
-        // --- trainingManager 自動検出 ---
         FindTrainingManager();
 
         if (trainingManager != null && trainingManager.warehouseGenerator != null)
@@ -214,7 +229,6 @@ public class WarehouseRobotAgent : Agent
             fieldDepth = trainingManager.warehouseGenerator.warehouseDepth;
         }
 
-        // envRoot を取得
         if (trainingManager != null && trainingManager.envRoot != null)
             envRoot = trainingManager.envRoot;
         else if (transform.parent != null)
@@ -224,7 +238,6 @@ public class WarehouseRobotAgent : Agent
 
         CreateCargoVisual();
 
-        // レイキャストセンサー初期化
         raySensor = new WarehouseObservations(this);
     }
 
@@ -236,7 +249,6 @@ public class WarehouseRobotAgent : Agent
     {
         if (trainingManager != null && pheromone != null) return;
 
-        // --- TrainingManager ---
         if (trainingManager == null)
         {
             trainingManager = GetComponentInParent<WarehouseTrainingManager>();
@@ -257,7 +269,6 @@ public class WarehouseRobotAgent : Agent
             }
         }
 
-        // --- Pheromone (TrainingManager と同じ GameObject にある想定) ---
         if (pheromone == null)
         {
             if (trainingManager != null)
@@ -276,31 +287,41 @@ public class WarehouseRobotAgent : Agent
         rb.velocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
 
-        // trainingManager がまだ null なら再検出
         FindTrainingManager();
 
-        // フェーズ1: 荷物を持って入口からスタート
         currentPhase = Phase.Delivering;
         ShowCargoVisual();
 
         if (trainingManager != null)
         {
             trainingManager.ResetEpisode(this);
+            // ResetEpisode が spawnEntranceIndex をセットする
         }
 
         // 帰還ターゲット出口を初期値で設定 (荷物を置いた時にランダム再選択)
+        // ※ここではインデックスも取得し、フェロモンに備える
         if (trainingManager != null)
-            targetExitPosition = trainingManager.GetRandomEntrance();
+        {
+            var (pos, idx) = trainingManager.GetRandomEntranceWithIndex();
+            targetExitPosition = pos;
+            targetExitIndex    = idx;
+        }
         else
+        {
             targetExitPosition = GetFallbackExitPosition();
+            targetExitIndex    = 0;
+        }
 
-        episodeTimer = 0f;
-        stuckTimer = 0f;
-        isTouchingWall = false;
+        // フェロモン用の棚インデックスをリセット
+        lastDroppedShelfIndex = -1;
+
+        episodeTimer      = 0f;
+        stuckTimer        = 0f;
+        isTouchingWall    = false;
         isPushingIntoWall = false;
         isPushingIntoAgent = false;
-        bestDistToShelf = float.MaxValue;
-        bestDistToExit  = float.MaxValue;
+        bestDistToShelf   = float.MaxValue;
+        bestDistToExit    = float.MaxValue;
     }
 
     /// <summary>
@@ -313,7 +334,8 @@ public class WarehouseRobotAgent : Agent
         ShowCargoVisual();
         rb.velocity = Vector3.zero;
         rb.angularVelocity = Vector3.zero;
-        if (WarehousePerformance.IsEnabled(p => p.DebugLog)) Debug.Log("[Robot] 初回配置完了 — 入口に荷物を持ってスタンバイ");
+        if (WarehousePerformance.IsEnabled(p => p.DebugLog))
+            Debug.Log("[Robot] 初回配置完了 — 入口に荷物を持ってスタンバイ");
     }
 
     // ==========================================
@@ -326,19 +348,15 @@ public class WarehouseRobotAgent : Agent
     {
         // === A. 基本観測 (8) ===
 
-        // --- 1. ローカル速度 (前後・左右) ---
         Vector3 localVel = transform.InverseTransformDirection(rb.velocity);
         sensor.AddObservation(localVel.z / maxSpeed);                       // [0] 前後速度
         sensor.AddObservation(localVel.x / maxSpeed);                       // [1] 左右速度
 
-        // --- 2. 角速度 (Y軸回転) ---
         float angVelY = rb.angularVelocity.y;
         sensor.AddObservation(angVelY / (turnSpeed * Mathf.Deg2Rad));       // [2] 正規化角速度
 
-        // --- 3. 現在のフェーズ (0=運搬中, 1=帰還中) ---
-        sensor.AddObservation(currentPhase == Phase.Delivering ? 0f : 1f);  // [3]
+        sensor.AddObservation(currentPhase == Phase.Delivering ? 0f : 1f);  // [3] フェーズ
 
-        // --- 4. ターゲット棚への極座標 (距離, 角度) ---
         if (targetShelfTransform != null)
         {
             var shelf = targetShelfTransform.GetComponent<ShelfUnit>();
@@ -349,40 +367,31 @@ public class WarehouseRobotAgent : Agent
         }
         else
         {
-            sensor.AddObservation(1f);  // 最大距離
-            sensor.AddObservation(0f);  // 正面
+            sensor.AddObservation(1f);
+            sensor.AddObservation(0f);
         }
 
-        // --- 5. ターゲット出口への極座標 (距離, 角度) ---
         AddPolarObservation(sensor, targetExitPosition);                    // [6] 距離, [7] 角度
 
         // === B. レイキャストセンサー (12本 × 4 = 48) ===
-        // [8..55] 各レイ: 正規化距離, 棚フラグ, 壁フラグ, エージェントフラグ
         raySensor.CollectRayObservations(sensor);
 
         // 合計: 8 + 48 = 56
     }
 
-    /// <summary>
-    /// ターゲットへの極座標観測値を追加する
-    ///   - 正規化距離: 0〜1 (fieldDiagonal で正規化)
-    ///   - 相対角度: -1〜1 (-π〜π を π で割る。0=正面, ±1=真後ろ)
-    /// </summary>
     void AddPolarObservation(VectorSensor sensor, Vector3 targetWorldPos)
     {
         Vector3 toTarget = targetWorldPos - transform.position;
         toTarget.y = 0f;
 
-        // 距離 (倉庫の対角線で正規化)
         float diagonal = Mathf.Sqrt(fieldWidth * fieldWidth + fieldDepth * fieldDepth);
         float dist = toTarget.magnitude;
         sensor.AddObservation(Mathf.Clamp01(dist / diagonal));
 
-        // 相対角度 (自分の正面を0とした符号付き角度)
         Vector3 forward = transform.forward;
         forward.y = 0f;
         float angle = Vector3.SignedAngle(forward, toTarget, Vector3.up);
-        sensor.AddObservation(angle / 180f);  // -1〜1 に正規化
+        sensor.AddObservation(angle / 180f);
     }
 
     // ==========================================
@@ -392,19 +401,15 @@ public class WarehouseRobotAgent : Agent
     {
         episodeTimer += Time.fixedDeltaTime;
 
-        // --- 連続行動: 移動 & 回転 ---
         float moveInput = Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f);
         float turnInput = Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f);
 
-        // 回転
         transform.Rotate(0f, turnInput * turnSpeed * Time.fixedDeltaTime, 0f);
 
-        // 力で加速 (Acceleration: 質量に依存しない = 直感的な加速度指定)
         Vector3 force = transform.forward * moveInput * moveAccel;
         rb.AddForce(force, ForceMode.Acceleration);
 
-        // 速度制限 (水平方向のみ、重力のY成分は維持)
-        Vector3 vel = rb.velocity;
+        Vector3 vel  = rb.velocity;
         Vector3 hVel = new Vector3(vel.x, 0f, vel.z);
         if (hVel.magnitude > maxSpeed)
         {
@@ -412,51 +417,71 @@ public class WarehouseRobotAgent : Agent
             rb.velocity = new Vector3(hVel.x, vel.y, hVel.z);
         }
 
-        // スタック検知 & 自動脱出
         CheckAndResolveStuck(moveInput);
 
-        // --- フェーズ判定 (排他: 同フレームで両方走らないようにする) ---
         if (currentPhase == Phase.Delivering)
-        {
             CheckAutoDropAtShelf();
-        }
         else if (currentPhase == Phase.Returning)
-        {
             CheckExitReached();
-        }
 
-        // --- 時間ペナルティ ---
         AddReward(penaltyTimeStep);
 
-        // --- 壁押し付けペナルティ ---
         if (isPushingIntoWall)
         {
             AddReward(penaltyWallStay);
             isPushingIntoWall = false;
         }
 
-        // --- エージェント押し付けペナルティ ---
         if (isPushingIntoAgent)
         {
             AddReward(penaltyAgentStay);
             isPushingIntoAgent = false;
         }
 
-        // --- シェーピング報酬 ---
         AddShapingReward();
 
-        // --- フェロモン報酬 (毎ステップ: 通ったセルにフェロモンを残す) ---
-        if (pheromone != null && currentPhase == Phase.Delivering && targetShelfTransform != null)
+        // ==========================================
+        //  フェロモン報酬
+        //
+        //  DELIVERING: (入口 → 棚) マップに分泌
+        //  RETURNING : (棚 → 出口) マップに分泌
+        //
+        //  棚インデックスは:
+        //   - DELIVERING: targetShelfTransform から毎回取得
+        //   - RETURNING : CompleteDrop 時に保存した lastDroppedShelfIndex を使用
+        // ==========================================
+        if (pheromone != null)
         {
-            var shelf = targetShelfTransform.GetComponent<ShelfUnit>();
-            if (shelf != null)
+            bool isDelivering = (currentPhase == Phase.Delivering);
+            int  sIdx;
+
+            if (isDelivering)
             {
-                float pheroReward = pheromone.StepPheromone(transform.position, shelf);
+                // DELIVERING: ターゲット棚が有効な場合のみ
+                var shelf = targetShelfTransform != null
+                    ? targetShelfTransform.GetComponent<ShelfUnit>() : null;
+                sIdx = (shelf != null) ? pheromone.GetShelfIndex(shelf) : -1;
+            }
+            else
+            {
+                // RETURNING: CompleteDrop で保存済みのインデックスを使用
+                sIdx = lastDroppedShelfIndex;
+            }
+
+            if (sIdx >= 0)
+            {
+                float pheroReward = pheromone.StepPheromone(
+                    transform.position,
+                    isDelivering,
+                    spawnEntranceIndex,   // DELIVERING で使用
+                    sIdx,
+                    targetExitIndex);     // RETURNING  で使用
+
                 AddReward(pheroReward);
             }
         }
 
-        // --- 落下検知 (環境の地面から-1m以下) ---
+        // 落下検知
         if (transform.position.y < GetEnvGroundY() - 1f)
         {
             Debug.LogWarning("[Robot] Fell off the platform! Resetting episode.");
@@ -465,16 +490,16 @@ public class WarehouseRobotAgent : Agent
             return;
         }
 
-        // --- ステップ数制限 ---
+        // ステップ数制限
         if (maxStepLimit > 0 && StepCount >= maxStepLimit)
         {
-        if (WarehousePerformance.IsEnabled(p => p.DebugLog))     Debug.Log($"[Robot] Step limit reached ({maxStepLimit}). Resetting episode.");
+            if (WarehousePerformance.IsEnabled(p => p.DebugLog))
+                Debug.Log($"[Robot] Step limit reached ({maxStepLimit}). Resetting episode.");
             AddReward(penaltyTimeout);
             EndEpisode();
             return;
         }
 
-        // --- デバッグ値更新 (HUD用、学習時はスキップ) ---
         if (WarehousePerformance.IsEnabled(p => p.HUD))
             UpdateDebugData(moveInput, turnInput);
     }
@@ -483,7 +508,6 @@ public class WarehouseRobotAgent : Agent
     {
         float moveDistance = Vector3.Distance(lastPosition, transform.position);
         totalMoveDistance += moveDistance;
-
         lastPosition = transform.position;
     }
 
@@ -493,43 +517,37 @@ public class WarehouseRobotAgent : Agent
         debugTurnInput = turnInput;
 
         Vector3 hVel = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
-        debugSpeed = hVel.magnitude;
-        debugAngularVelY = rb.angularVelocity.y;
-        debugEpisodeTimer = episodeTimer;
+        debugSpeed         = hVel.magnitude;
+        debugAngularVelY   = rb.angularVelocity.y;
+        debugEpisodeTimer  = episodeTimer;
         debugCumulativeReward = GetCumulativeReward();
-        debugCompletedCount = completedCount;
-        debugStepCount = StepCount;
-        debugPhase = currentPhase;
-        debugIsPushingWall = isPushingIntoWall || isTouchingWall || isPushingIntoAgent;
+        debugCompletedCount   = completedCount;
+        debugStepCount        = StepCount;
+        debugPhase            = currentPhase;
+        debugIsPushingWall    = isPushingIntoWall || isTouchingWall || isPushingIntoAgent;
 
-        // 棚への極座標 (距離 + 角度)
         if (targetShelfTransform != null)
         {
             var shelf = targetShelfTransform.GetComponent<ShelfUnit>();
             Vector3 shelfTarget = shelf != null
                 ? GetShelfFrontPosition(shelf)
                 : targetShelfTransform.position;
-            debugDistToShelf = HorizontalDistance(transform.position, shelfTarget);
+            debugDistToShelf  = HorizontalDistance(transform.position, shelfTarget);
             debugAngleToShelf = SignedAngleTo(shelfTarget);
         }
         else
         {
-            debugDistToShelf = -1f;
+            debugDistToShelf  = -1f;
             debugAngleToShelf = 0f;
         }
 
-        // 出口への極座標 (距離 + 角度)
-        debugDistToExit = HorizontalDistance(transform.position, targetExitPosition);
+        debugDistToExit  = HorizontalDistance(transform.position, targetExitPosition);
         debugAngleToExit = SignedAngleTo(targetExitPosition);
 
-        // レイキャストデータ (HUDで表示用)
         if (raySensor != null)
             debugRayData = raySensor.CollectRayObservationsArray();
     }
 
-    /// <summary>
-    /// ターゲットへの符号付き角度を返す (度)。正面=0, 右=+, 左=-
-    /// </summary>
     float SignedAngleTo(Vector3 targetWorldPos)
     {
         Vector3 toTarget = targetWorldPos - transform.position;
@@ -551,15 +569,6 @@ public class WarehouseRobotAgent : Agent
 
     // ==========================================
     //  棚の前面に来たら自動で荷物を置く
-    //
-    //  判定条件:
-    //   1. ロボットが棚の通路側 (前面) にいる
-    //   2. 棚の前面からの距離が dropRange 以内
-    //   3. Z方向が棚の幅の範囲内 (±マージン)
-    //
-    //  棚レイアウト (背中合わせ):
-    //    side=0: 通路は X- 方向 → 前面 = shelfPos.x
-    //    side=1: 通路は X+ 方向 → 前面 = shelfPos.x + depth
     // ==========================================
     void CheckAutoDropAtShelf()
     {
@@ -568,7 +577,6 @@ public class WarehouseRobotAgent : Agent
         var shelf = targetShelfTransform.GetComponent<ShelfUnit>();
         if (shelf == null)
         {
-            // ShelfUnit がない場合はフォールバック (距離のみ)
             float d = HorizontalDistance(transform.position, targetShelfTransform.position);
             if (d <= dropRange) CompleteDrop(shelf);
             return;
@@ -579,53 +587,40 @@ public class WarehouseRobotAgent : Agent
         CompleteDrop(shelf);
     }
 
-    /// <summary>
-    /// ロボットが棚の前面 (allowBackAccess時は背面も) にいるかどうかを判定する
-    /// </summary>
     bool IsInFrontOfShelf(ShelfUnit shelf)
     {
         Vector3 shelfPos = shelf.transform.position;
         Vector3 robotPos = transform.position;
-        float d = shelf.depth;
-        float w = shelf.width;
+        float d      = shelf.depth;
+        float w      = shelf.width;
         float margin = 0.5f;
 
-        // --- Z方向: 棚の幅の範囲内か (±マージン) ---
         float zMin = shelfPos.z - margin;
         float zMax = shelfPos.z + w + margin;
-        if (robotPos.z < zMin || robotPos.z > zMax)
-            return false;
+        if (robotPos.z < zMin || robotPos.z > zMax) return false;
 
-        // --- X方向: 前面チェック ---
-        // 前面 (sideIndex 側)
-        if (CheckFrontAccess(shelfPos, robotPos, d, shelf.sideIndex))
-            return true;
+        if (CheckFrontAccess(shelfPos, robotPos, d, shelf.sideIndex)) return true;
 
-        // 背面 (allowBackAccess 時のみ)
         if (allowBackAccess)
         {
             int backSide = shelf.sideIndex == 0 ? 1 : 0;
-            if (CheckFrontAccess(shelfPos, robotPos, d, backSide))
-                return true;
+            if (CheckFrontAccess(shelfPos, robotPos, d, backSide)) return true;
         }
 
         return false;
     }
 
-    /// <summary>
-    /// 指定した side 方向からのアクセス判定
-    /// </summary>
     bool CheckFrontAccess(Vector3 shelfPos, Vector3 robotPos, float depth, int side)
     {
         if (side == 0)
         {
-            float frontX = shelfPos.x;
+            float frontX    = shelfPos.x;
             float distToFront = frontX - robotPos.x;
             return distToFront > -0.3f && distToFront < dropRange;
         }
         else
         {
-            float frontX = shelfPos.x + depth;
+            float frontX    = shelfPos.x + depth;
             float distToFront = robotPos.x - frontX;
             return distToFront > -0.3f && distToFront < dropRange;
         }
@@ -640,30 +635,41 @@ public class WarehouseRobotAgent : Agent
         HideCargoVisual();
         AddReward(rewardDropAtShelf);
 
-        // フェーズ切替: 最短距離記録をリセット
         bestDistToExit = float.MaxValue;
 
         if (shelf != null)
-        {
             shelf.AddCrate(0, 10f);
-        }
 
-        // ランダムな出口を選択して帰還ターゲットに設定
+        // ==========================================
+        //  フェロモン用: 棚インデックスを保存
+        //  RETURNINGフェーズで pheromone.StepPheromone に渡すために
+        //  ここで取得しておく (targetShelfTransform は帰還中でも参照可だが
+        //  明示的に保持することでコード意図を明確にする)
+        // ==========================================
+        lastDroppedShelfIndex = (pheromone != null && shelf != null)
+            ? pheromone.GetShelfIndex(shelf) : -1;
+
+        // 帰還出口をランダム選択 (インデックスも更新してフェロモンに対応)
         if (trainingManager != null)
         {
-            targetExitPosition = trainingManager.GetRandomEntrance();
-            trainingManager.OnCargoDropped(this, targetExitPosition);
+            var (pos, idx) = trainingManager.GetRandomEntranceWithIndex();
+            targetExitPosition = pos;
+            targetExitIndex    = idx;
+            trainingManager.OnCargoDropped(this, pos);
         }
         else
         {
             targetExitPosition = GetFallbackExitPosition();
+            targetExitIndex    = 0;
         }
 
-        if (WarehousePerformance.IsEnabled(p => p.DebugLog)) Debug.Log($"[Robot] Auto-drop at shelf front! -> Returning to exit ({targetExitPosition.x:F1}, {targetExitPosition.z:F1})");
+        if (WarehousePerformance.IsEnabled(p => p.DebugLog))
+            Debug.Log($"[Robot] Auto-drop at shelf front! -> Returning to exit " +
+                      $"({targetExitPosition.x:F1}, {targetExitPosition.z:F1}) idx={targetExitIndex}");
     }
 
     // ==========================================
-    //  入口到達チェック (帰還フェーズで自動判定)
+    //  入口到達チェック (帰還フェーズ)
     // ==========================================
     void CheckExitReached()
     {
@@ -673,18 +679,14 @@ public class WarehouseRobotAgent : Agent
         {
             completedCount++;
             AddReward(rewardExitComplete);
-        if (WarehousePerformance.IsEnabled(p => p.DebugLog))     Debug.Log($"[Robot] 入口から退出! タスク完了! (累計:{completedCount})");
+            if (WarehousePerformance.IsEnabled(p => p.DebugLog))
+                Debug.Log($"[Robot] 入口から退出! タスク完了! (累計:{completedCount})");
             EndEpisode();
         }
     }
 
     // ==========================================
     //  シェーピング報酬 (最短距離更新)
-    //
-    //  エピソード中の最短距離を記録し、新記録を出した時だけ報酬。
-    //  - 近づく → 新記録 → 正の報酬
-    //  - 遠ざかる (迂回) → 記録更新なし → 報酬0 (罰なし!)
-    //  - 壁に張り付き → 距離変わらず → 報酬0 + 時間ペナルティだけ
     // ==========================================
     void AddShapingReward()
     {
@@ -700,7 +702,7 @@ public class WarehouseRobotAgent : Agent
                 if (dist < bestDistToShelf)
                 {
                     float improvement = bestDistToShelf == float.MaxValue
-                        ? 0f  // 初回は報酬なし (基準値の設定のみ)
+                        ? 0f
                         : bestDistToShelf - dist;
                     bestDistToShelf = dist;
                     AddReward(improvement * shelfApproachReward);
@@ -725,26 +727,17 @@ public class WarehouseRobotAgent : Agent
         }
     }
 
-    /// <summary>
-    /// TrainingManager未接続時のフォールバック出口位置 (envRoot基準)
-    /// </summary>
     Vector3 GetFallbackExitPosition()
     {
         Vector3 localExit = new Vector3(-1.5f, transform.position.y - GetEnvGroundY(), fieldDepth / 2f);
         return envRoot != null ? envRoot.TransformPoint(localExit) : localExit;
     }
 
-    /// <summary>
-    /// 環境の地面Y座標を返す
-    /// </summary>
     float GetEnvGroundY()
     {
         return envRoot != null ? envRoot.position.y : 0f;
     }
 
-    /// <summary>
-    /// XZ平面上の水平距離を返す (高さは無視)
-    /// </summary>
     float HorizontalDistance(Vector3 a, Vector3 b)
     {
         float dx = a.x - b.x;
@@ -754,41 +747,28 @@ public class WarehouseRobotAgent : Agent
 
     // ==========================================
     //  棚のアクセス面の座標計算
-    //
-    //  通常: sideIndex 側の前面中央を返す
-    //  allowBackAccess: 前面と背面のうちロボットに近い方を返す
     // ==========================================
-
-    /// <summary>
-    /// 棚のアクセス面中央の座標を返す (ロボットの目標地点)
-    /// </summary>
     Vector3 GetShelfFrontPosition(ShelfUnit shelf)
     {
-        Vector3 shelfPos = shelf.transform.position;
-        float centerZ = shelfPos.z + shelf.width / 2f;
-        float frontOffset = 1.0f;
+        Vector3 shelfPos    = shelf.transform.position;
+        float   centerZ     = shelfPos.z + shelf.width / 2f;
+        float   frontOffset = 1.0f;
 
         Vector3 frontPos = shelf.sideIndex == 0
             ? new Vector3(shelfPos.x - frontOffset, transform.position.y, centerZ)
             : new Vector3(shelfPos.x + shelf.depth + frontOffset, transform.position.y, centerZ);
 
-        if (!allowBackAccess)
-            return frontPos;
+        if (!allowBackAccess) return frontPos;
 
-        // 背面側の座標
         Vector3 backPos = shelf.sideIndex == 0
             ? new Vector3(shelfPos.x + shelf.depth + frontOffset, transform.position.y, centerZ)
             : new Vector3(shelfPos.x - frontOffset, transform.position.y, centerZ);
 
-        // ロボットに近い方を返す
         float distFront = HorizontalDistance(transform.position, frontPos);
         float distBack  = HorizontalDistance(transform.position, backPos);
         return distFront <= distBack ? frontPos : backPos;
     }
 
-    /// <summary>
-    /// ロボットから棚の前面までの水平距離
-    /// </summary>
     float DistanceToShelfFront(ShelfUnit shelf)
     {
         Vector3 frontPos = GetShelfFrontPosition(shelf);
@@ -797,60 +777,42 @@ public class WarehouseRobotAgent : Agent
 
     // ==========================================
     //  引っかかり防止: Collider設定
-    //
-    //  1. 既存Colliderを削除し CapsuleCollider に差替え
-    //  2. center を少し浮かせて床の継ぎ目をまたぐ
-    //  3. 低摩擦 PhysicMaterial で壁・棚を滑る
-    //  4. Continuous Collision Detection で高速時のすり抜け防止
     // ==========================================
     void SetupSmoothCollider()
     {
-        // 既存のColliderをすべて削除
         foreach (var col in GetComponents<Collider>())
-        {
             Destroy(col);
-        }
 
-        // CapsuleCollider (丸いので角に引っかからない)
         var capsule = gameObject.AddComponent<CapsuleCollider>();
-        capsule.direction = 1; // Y軸
+        capsule.direction = 1;
 
-        // localScale を考慮した正しいサイズ計算
         Vector3 s = transform.localScale;
         float worldRadius = Mathf.Max(s.x, s.z) * 0.5f;
         float worldHeight = s.y;
 
-        // CapsuleCollider は localScale で自動スケールされるので
-        // ローカル空間で指定する
         capsule.radius = worldRadius / Mathf.Max(s.x, s.z);
         capsule.height = worldHeight / s.y;
-
-        // center を少し浮かせて床の継ぎ目を越える
         capsule.center = new Vector3(0f, 0.05f, 0f);
 
-        // 低摩擦 PhysicMaterial
         var pm = new PhysicMaterial("RobotSmooth");
-        pm.dynamicFriction = 0.05f;
-        pm.staticFriction  = 0.05f;
-        pm.bounciness      = 0f;
+        pm.dynamicFriction  = 0.05f;
+        pm.staticFriction   = 0.05f;
+        pm.bounciness       = 0f;
         pm.frictionCombine  = PhysicMaterialCombine.Minimum;
         pm.bounceCombine    = PhysicMaterialCombine.Minimum;
         capsule.material = pm;
 
-        // 連続衝突検出 (高速移動時のすり抜け防止)
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
     }
 
     // ==========================================
     //  スタック検知 & 脱出
-    //
-    //  力を入れているのに動かない場合に小さな横方向の力で押し出す
     // ==========================================
     private float stuckTimer = 0f;
     private const float STUCK_SPEED_THRESHOLD = 0.15f;
-    private const float STUCK_TIME_LIMIT = 0.8f;
-    private const float STUCK_NUDGE_FORCE = 8f;
+    private const float STUCK_TIME_LIMIT      = 0.8f;
+    private const float STUCK_NUDGE_FORCE     = 8f;
 
     void CheckAndResolveStuck(float moveInput)
     {
@@ -863,7 +825,6 @@ public class WarehouseRobotAgent : Agent
             stuckTimer += Time.fixedDeltaTime;
             if (stuckTimer > STUCK_TIME_LIMIT)
             {
-                // 横方向にランダムな力を加えて脱出
                 Vector3 nudge = transform.right * (Random.value > 0.5f ? 1f : -1f) * STUCK_NUDGE_FORCE;
                 rb.AddForce(nudge, ForceMode.Acceleration);
                 stuckTimer = 0f;
@@ -878,7 +839,7 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     //  衝突
     // ==========================================
-    private bool isTouchingWall = false;
+    private bool isTouchingWall    = false;
     private bool isPushingIntoWall = false;
     private bool isPushingIntoAgent = false;
 
@@ -890,7 +851,6 @@ public class WarehouseRobotAgent : Agent
             AddReward(penaltyWallHit);
             crashToWall++;
             Debug.Log("wall hit");
-            // Debug.Break();
         }
         else if (IsOtherAgent(collision.gameObject))
         {
@@ -908,11 +868,10 @@ public class WarehouseRobotAgent : Agent
         if (normal.magnitude < 0.01f) return;
         normal.Normalize();
 
-        Vector3 vel = rb.velocity;
+        Vector3 vel  = rb.velocity;
         Vector3 hVel = new Vector3(vel.x, 0f, vel.z);
         float normalComponent = Vector3.Dot(hVel, normal);
 
-        // --- 壁 ---
         string n = collision.gameObject.name;
         if (IsWallObject(n))
         {
@@ -921,20 +880,16 @@ public class WarehouseRobotAgent : Agent
             if (normalComponent < -0.1f)
             {
                 isPushingIntoWall = true;
-                // スライド補正
                 hVel -= normal * normalComponent;
                 rb.velocity = new Vector3(hVel.x, vel.y, hVel.z);
             }
             return;
         }
 
-        // --- 他のエージェント ---
         if (IsOtherAgent(collision.gameObject))
         {
             if (normalComponent < -0.1f)
-            {
                 isPushingIntoAgent = true;
-            }
         }
     }
 
@@ -943,7 +898,7 @@ public class WarehouseRobotAgent : Agent
         string n = collision.gameObject.name;
         if (IsWallObject(n))
         {
-            isTouchingWall = false;
+            isTouchingWall    = false;
             isPushingIntoWall = false;
         }
         else if (IsOtherAgent(collision.gameObject))
@@ -954,10 +909,9 @@ public class WarehouseRobotAgent : Agent
 
     bool IsWallObject(string name)
     {
-        return name.StartsWith("Wall") || name.StartsWith("Pillar") || name.StartsWith("Guard")
-            || name.StartsWith("Post") || name.StartsWith("Rack");
-            // return name.StartsWith("Wall") || name.StartsWith("Pillar") || name.StartsWith("Guard")
-            // || name.StartsWith("Post") || name.StartsWith("Shelf") || name.StartsWith("Rack");
+        return name.StartsWith("Wall")   || name.StartsWith("Pillar") ||
+               name.StartsWith("Guard")  || name.StartsWith("Post")   ||
+               name.StartsWith("Rack");
     }
 
     bool IsOtherAgent(GameObject go)
@@ -985,11 +939,11 @@ public class WarehouseRobotAgent : Agent
         float sz = Mathf.Min(rs.x, rs.z) * cargoSizeRatio;
         float h  = rs.y * cargoSizeRatio * 0.8f;
 
-        cargoVisual.transform.localScale = new Vector3(sz / rs.x, h / rs.y, sz / rs.z);
+        cargoVisual.transform.localScale    = new Vector3(sz / rs.x, h / rs.y, sz / rs.z);
         cargoVisual.transform.localPosition = new Vector3(0f, 0.5f + (h / rs.y) * 0.5f + 0.05f, 0f);
 
         var rend = cargoVisual.GetComponent<Renderer>();
-        rend.material = new Material(Shader.Find("Standard"));
+        rend.material       = new Material(Shader.Find("Standard"));
         rend.material.color = cargoColor;
 
         var c = cargoVisual.GetComponent<Collider>();
@@ -1020,9 +974,9 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     //  公開プロパティ
     // ==========================================
-    public Phase CurrentPhase => currentPhase;
-    public bool IsCarrying => currentPhase == Phase.Delivering;
-    public int CompletedCount => completedCount;
+    public Phase CurrentPhase  => currentPhase;
+    public bool  IsCarrying    => currentPhase == Phase.Delivering;
+    public int   CompletedCount => completedCount;
 
     public void SetFieldSize(float w, float d)
     {
