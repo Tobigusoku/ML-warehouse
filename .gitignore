@@ -70,3 +70,14 @@ ProjectSettings/EditorUserSettings.asset
 
 # Lock files
 *.lock
+
+.vscode/settings.json
+Packages/manifest.json
+ProjectSettings/ProjectVersion.txt
+ProjectSettings/Packages/com.unity.testtools.codecoverage/Settings.json
+
+Recordings/
+./Assets/Scenes/*
+./Assets/Prefab/*
+./Assets/Models/*
+./Assets/ML-Agents/*
