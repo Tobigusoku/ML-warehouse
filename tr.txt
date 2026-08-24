@@ -1,0 +1,18 @@
+# Run with:
+#   python tr.py
+
+runs=3
+prefix=16smallbase
+digits=2
+start=auto
+
+config=warehouse_training.yaml
+env=App/ML-warehouse.exe
+results=results
+models=Assets/Models
+behavior=WarehouseRobot
+
+no_graphics=true
+force=false
+mlagents=mlagents-learn
+extra_args=

@@ -171,7 +171,7 @@ public class WarehouseRobotAgent : Agent
 
     // シェーピング報酬: エピソード中の最短距離記録
     private float bestDistToShelf = float.MaxValue;
-    private float bestDistToExit  = float.MaxValue;
+    private float bestDistToExit = float.MaxValue;
 
     // ==========================================
     //  デバッグ用 公開プロパティ (HUDから参照)
@@ -183,14 +183,14 @@ public class WarehouseRobotAgent : Agent
     [HideInInspector] public float debugEpisodeTimer;
     [HideInInspector] public float debugCumulativeReward;
     [HideInInspector] public float debugStepReward;
-    [HideInInspector] public int   debugCompletedCount;
-    [HideInInspector] public int   debugStepCount;
+    [HideInInspector] public int debugCompletedCount;
+    [HideInInspector] public int debugStepCount;
     [HideInInspector] public float debugDistToShelf;
     [HideInInspector] public float debugAngleToShelf;
     [HideInInspector] public float debugDistToExit;
     [HideInInspector] public float debugAngleToExit;
     [HideInInspector] public Phase debugPhase;
-    [HideInInspector] public bool  debugIsPushingWall;
+    [HideInInspector] public bool debugIsPushingWall;
     [HideInInspector] public float[] debugRayData;
 
     // ==========================================
@@ -304,24 +304,24 @@ public class WarehouseRobotAgent : Agent
         {
             var (pos, idx) = trainingManager.GetRandomEntranceWithIndex();
             targetExitPosition = pos;
-            targetExitIndex    = idx;
+            targetExitIndex = idx;
         }
         else
         {
             targetExitPosition = GetFallbackExitPosition();
-            targetExitIndex    = 0;
+            targetExitIndex = 0;
         }
 
         // フェロモン用の棚インデックスをリセット
         lastDroppedShelfIndex = -1;
 
-        episodeTimer      = 0f;
-        stuckTimer        = 0f;
-        isTouchingWall    = false;
+        episodeTimer = 0f;
+        stuckTimer = 0f;
+        isTouchingWall = false;
         isPushingIntoWall = false;
         isPushingIntoAgent = false;
-        bestDistToShelf   = float.MaxValue;
-        bestDistToExit    = float.MaxValue;
+        bestDistToShelf = float.MaxValue;
+        bestDistToExit = float.MaxValue;
     }
 
     /// <summary>
@@ -376,7 +376,40 @@ public class WarehouseRobotAgent : Agent
         // === B. レイキャストセンサー (12本 × 4 = 48) ===
         raySensor.CollectRayObservations(sensor);
 
-        // 合計: 8 + 48 = 56
+        bool isDelivering = (currentPhase == Phase.Delivering);
+        int sIdx;
+        if (isDelivering)
+        {
+            var shelf = targetShelfTransform != null
+                ? targetShelfTransform.GetComponent<ShelfUnit>() : null;
+            sIdx = (shelf != null) ? pheromone.GetShelfIndex(shelf) : -1;
+        }
+        else
+        {
+            sIdx = lastDroppedShelfIndex;
+        }
+
+        // Debug.Log($"[Obs] pheromone={pheromone != null}, sIdx={sIdx}, initialized={pheromone?.IsInitialized}");
+
+        if (pheromone != null && sIdx >= 0)
+        {
+            float[] pheroObservation = pheromone.GetPheromoneObservationList(
+                transform.position,
+                isDelivering,
+                spawnEntranceIndex,
+                sIdx,
+                targetExitIndex);
+
+            foreach (float value in pheroObservation)
+                sensor.AddObservation(value);
+        }
+        else
+        {
+            // フェロモン取れない場合もゼロで9次元埋める（Space Sizeを固定するため）
+            for (int i = 0; i < 9; i++)
+                sensor.AddObservation(0f);
+        }                                   // [8] 以降にフェロモン観測を追加 (必要に応じて Space Size を増やす)
+        // 合計: 8 + 48 + 9 = 65
     }
 
     void AddPolarObservation(VectorSensor sensor, Vector3 targetWorldPos)
@@ -409,7 +442,7 @@ public class WarehouseRobotAgent : Agent
         Vector3 force = transform.forward * moveInput * moveAccel;
         rb.AddForce(force, ForceMode.Acceleration);
 
-        Vector3 vel  = rb.velocity;
+        Vector3 vel = rb.velocity;
         Vector3 hVel = new Vector3(vel.x, 0f, vel.z);
         if (hVel.magnitude > maxSpeed)
         {
@@ -453,7 +486,7 @@ public class WarehouseRobotAgent : Agent
         if (pheromone != null)
         {
             bool isDelivering = (currentPhase == Phase.Delivering);
-            int  sIdx;
+            int sIdx;
 
             if (isDelivering)
             {
@@ -517,14 +550,14 @@ public class WarehouseRobotAgent : Agent
         debugTurnInput = turnInput;
 
         Vector3 hVel = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
-        debugSpeed         = hVel.magnitude;
-        debugAngularVelY   = rb.angularVelocity.y;
-        debugEpisodeTimer  = episodeTimer;
+        debugSpeed = hVel.magnitude;
+        debugAngularVelY = rb.angularVelocity.y;
+        debugEpisodeTimer = episodeTimer;
         debugCumulativeReward = GetCumulativeReward();
-        debugCompletedCount   = completedCount;
-        debugStepCount        = StepCount;
-        debugPhase            = currentPhase;
-        debugIsPushingWall    = isPushingIntoWall || isTouchingWall || isPushingIntoAgent;
+        debugCompletedCount = completedCount;
+        debugStepCount = StepCount;
+        debugPhase = currentPhase;
+        debugIsPushingWall = isPushingIntoWall || isTouchingWall || isPushingIntoAgent;
 
         if (targetShelfTransform != null)
         {
@@ -532,16 +565,16 @@ public class WarehouseRobotAgent : Agent
             Vector3 shelfTarget = shelf != null
                 ? GetShelfFrontPosition(shelf)
                 : targetShelfTransform.position;
-            debugDistToShelf  = HorizontalDistance(transform.position, shelfTarget);
+            debugDistToShelf = HorizontalDistance(transform.position, shelfTarget);
             debugAngleToShelf = SignedAngleTo(shelfTarget);
         }
         else
         {
-            debugDistToShelf  = -1f;
+            debugDistToShelf = -1f;
             debugAngleToShelf = 0f;
         }
 
-        debugDistToExit  = HorizontalDistance(transform.position, targetExitPosition);
+        debugDistToExit = HorizontalDistance(transform.position, targetExitPosition);
         debugAngleToExit = SignedAngleTo(targetExitPosition);
 
         if (raySensor != null)
@@ -591,8 +624,8 @@ public class WarehouseRobotAgent : Agent
     {
         Vector3 shelfPos = shelf.transform.position;
         Vector3 robotPos = transform.position;
-        float d      = shelf.depth;
-        float w      = shelf.width;
+        float d = shelf.depth;
+        float w = shelf.width;
         float margin = 0.5f;
 
         float zMin = shelfPos.z - margin;
@@ -614,13 +647,13 @@ public class WarehouseRobotAgent : Agent
     {
         if (side == 0)
         {
-            float frontX    = shelfPos.x;
+            float frontX = shelfPos.x;
             float distToFront = frontX - robotPos.x;
             return distToFront > -0.3f && distToFront < dropRange;
         }
         else
         {
-            float frontX    = shelfPos.x + depth;
+            float frontX = shelfPos.x + depth;
             float distToFront = robotPos.x - frontX;
             return distToFront > -0.3f && distToFront < dropRange;
         }
@@ -649,19 +682,10 @@ public class WarehouseRobotAgent : Agent
         lastDroppedShelfIndex = (pheromone != null && shelf != null)
             ? pheromone.GetShelfIndex(shelf) : -1;
 
-        // 帰還出口をランダム選択 (インデックスも更新してフェロモンに対応)
+        // 出口はスポーン時に決めたものをそのまま使う。
+        // これにより「入口 -> 棚 -> 出口」の完全ルートを一貫して学習できる。
         if (trainingManager != null)
-        {
-            var (pos, idx) = trainingManager.GetRandomEntranceWithIndex();
-            targetExitPosition = pos;
-            targetExitIndex    = idx;
-            trainingManager.OnCargoDropped(this, pos);
-        }
-        else
-        {
-            targetExitPosition = GetFallbackExitPosition();
-            targetExitIndex    = 0;
-        }
+            trainingManager.OnCargoDropped(this, targetExitPosition);
 
         if (WarehousePerformance.IsEnabled(p => p.DebugLog))
             Debug.Log($"[Robot] Auto-drop at shelf front! -> Returning to exit " +
@@ -750,9 +774,9 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     Vector3 GetShelfFrontPosition(ShelfUnit shelf)
     {
-        Vector3 shelfPos    = shelf.transform.position;
-        float   centerZ     = shelfPos.z + shelf.width / 2f;
-        float   frontOffset = 1.0f;
+        Vector3 shelfPos = shelf.transform.position;
+        float centerZ = shelfPos.z + shelf.width / 2f;
+        float frontOffset = 1.0f;
 
         Vector3 frontPos = shelf.sideIndex == 0
             ? new Vector3(shelfPos.x - frontOffset, transform.position.y, centerZ)
@@ -765,7 +789,7 @@ public class WarehouseRobotAgent : Agent
             : new Vector3(shelfPos.x - frontOffset, transform.position.y, centerZ);
 
         float distFront = HorizontalDistance(transform.position, frontPos);
-        float distBack  = HorizontalDistance(transform.position, backPos);
+        float distBack = HorizontalDistance(transform.position, backPos);
         return distFront <= distBack ? frontPos : backPos;
     }
 
@@ -795,11 +819,11 @@ public class WarehouseRobotAgent : Agent
         capsule.center = new Vector3(0f, 0.05f, 0f);
 
         var pm = new PhysicMaterial("RobotSmooth");
-        pm.dynamicFriction  = 0.05f;
-        pm.staticFriction   = 0.05f;
-        pm.bounciness       = 0f;
-        pm.frictionCombine  = PhysicMaterialCombine.Minimum;
-        pm.bounceCombine    = PhysicMaterialCombine.Minimum;
+        pm.dynamicFriction = 0.05f;
+        pm.staticFriction = 0.05f;
+        pm.bounciness = 0f;
+        pm.frictionCombine = PhysicMaterialCombine.Minimum;
+        pm.bounceCombine = PhysicMaterialCombine.Minimum;
         capsule.material = pm;
 
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
@@ -811,8 +835,8 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     private float stuckTimer = 0f;
     private const float STUCK_SPEED_THRESHOLD = 0.15f;
-    private const float STUCK_TIME_LIMIT      = 0.8f;
-    private const float STUCK_NUDGE_FORCE     = 8f;
+    private const float STUCK_TIME_LIMIT = 0.8f;
+    private const float STUCK_NUDGE_FORCE = 8f;
 
     void CheckAndResolveStuck(float moveInput)
     {
@@ -839,7 +863,7 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     //  衝突
     // ==========================================
-    private bool isTouchingWall    = false;
+    private bool isTouchingWall = false;
     private bool isPushingIntoWall = false;
     private bool isPushingIntoAgent = false;
 
@@ -868,7 +892,7 @@ public class WarehouseRobotAgent : Agent
         if (normal.magnitude < 0.01f) return;
         normal.Normalize();
 
-        Vector3 vel  = rb.velocity;
+        Vector3 vel = rb.velocity;
         Vector3 hVel = new Vector3(vel.x, 0f, vel.z);
         float normalComponent = Vector3.Dot(hVel, normal);
 
@@ -898,7 +922,7 @@ public class WarehouseRobotAgent : Agent
         string n = collision.gameObject.name;
         if (IsWallObject(n))
         {
-            isTouchingWall    = false;
+            isTouchingWall = false;
             isPushingIntoWall = false;
         }
         else if (IsOtherAgent(collision.gameObject))
@@ -909,8 +933,8 @@ public class WarehouseRobotAgent : Agent
 
     bool IsWallObject(string name)
     {
-        return name.StartsWith("Wall")   || name.StartsWith("Pillar") ||
-               name.StartsWith("Guard")  || name.StartsWith("Post")   ||
+        return name.StartsWith("Wall") || name.StartsWith("Pillar") ||
+               name.StartsWith("Guard") || name.StartsWith("Post") ||
                name.StartsWith("Rack");
     }
 
@@ -937,13 +961,13 @@ public class WarehouseRobotAgent : Agent
 
         Vector3 rs = transform.localScale;
         float sz = Mathf.Min(rs.x, rs.z) * cargoSizeRatio;
-        float h  = rs.y * cargoSizeRatio * 0.8f;
+        float h = rs.y * cargoSizeRatio * 0.8f;
 
-        cargoVisual.transform.localScale    = new Vector3(sz / rs.x, h / rs.y, sz / rs.z);
+        cargoVisual.transform.localScale = new Vector3(sz / rs.x, h / rs.y, sz / rs.z);
         cargoVisual.transform.localPosition = new Vector3(0f, 0.5f + (h / rs.y) * 0.5f + 0.05f, 0f);
 
         var rend = cargoVisual.GetComponent<Renderer>();
-        rend.material       = new Material(Shader.Find("Standard"));
+        rend.material = new Material(Shader.Find("Standard"));
         rend.material.color = cargoColor;
 
         var c = cargoVisual.GetComponent<Collider>();
@@ -974,9 +998,9 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     //  公開プロパティ
     // ==========================================
-    public Phase CurrentPhase  => currentPhase;
-    public bool  IsCarrying    => currentPhase == Phase.Delivering;
-    public int   CompletedCount => completedCount;
+    public Phase CurrentPhase => currentPhase;
+    public bool IsCarrying => currentPhase == Phase.Delivering;
+    public int CompletedCount => completedCount;
 
     public void SetFieldSize(float w, float d)
     {

@@ -1,0 +1,10 @@
+﻿<Solution>
+  <Project Path="Unity.ML-Agents.Extensions.Input.csproj" />
+  <Project Path="Unity.ML-Agents.Extensions.csproj" />
+  <Project Path="Unity.ML-Agents.csproj" />
+  <Project Path="Unity.ML-Agents.Editor.csproj" />
+  <Project Path="Unity.ML-Agents.CommunicatorObjects.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="Unity.ML-Agents.Extensions.Editor.csproj" />
+  <Project Path="Unity.ML-Agents.Extensions.Editor.Input.csproj" />
+</Solution>

@@ -32,6 +32,29 @@ using System.Collections.Generic;
 /// </summary>
 public class WarehousePheromone : MonoBehaviour
 {
+    public struct PheromoneUsageStats
+    {
+        public int gridW;
+        public int gridD;
+        public int cellCount;
+        public int deliveringMapCount;
+        public int returningMapCount;
+        public int mapCount;
+        public int totalMapCells;
+        public int activeMapCells;
+        public int uniqueActiveCells;
+        public float activeMapCellRatio;
+        public float uniqueActiveCellRatio;
+        public float total;
+        public float max;
+        public float deliveringTotal;
+        public float deliveringMax;
+        public int deliveringActiveMapCells;
+        public float returningTotal;
+        public float returningMax;
+        public int returningActiveMapCells;
+    }
+
     // ==========================================
     //  Inspector 設定
     // ==========================================
@@ -45,6 +68,11 @@ public class WarehousePheromone : MonoBehaviour
     [Header("===== フェロモン設定 =====")]
     [Tooltip("1ステップで分泌するフェロモン量")]
     public float pheroQ = 1f;
+    [Tooltip("Current route-map interpretation. Shared and PhaseSeparated are recorded but not implemented by the current route-map storage.")]
+    public WarehousePheromoneMode pheromoneMode = WarehousePheromoneMode.TaskSeparated;
+    public bool usePheromone = true;
+    public float pheromoneMinValue = 0f;
+    public float pheromoneMaxValue = 1000000f;
 
     [Tooltip("フェロモンの蒸発率 (0〜1)")]
     [Range(0f, 1f)]
@@ -74,7 +102,7 @@ public class WarehousePheromone : MonoBehaviour
     public int visualUpdateFrames = 5;
 
     [Tooltip("低フェロモン色")]
-    public Color vizColorLow  = new Color(0f, 0.1f, 0.4f, 0.3f);
+    public Color vizColorLow = new Color(0f, 0.1f, 0.4f, 0.3f);
 
     [Tooltip("高フェロモン色")]
     public Color vizColorHigh = new Color(1f, 0.3f, 0f, 0.7f);
@@ -82,9 +110,9 @@ public class WarehousePheromone : MonoBehaviour
     // ==========================================
     //  内部変数 — グリッド
     // ==========================================
-    private int   gridW;
-    private int   gridD;
-    private int   cellCount;   // gridW * gridD
+    private int gridW;
+    private int gridD;
+    private int cellCount;   // gridW * gridD
     private float warehouseW;
     private float warehouseD;
     private Transform genTransform;
@@ -95,28 +123,27 @@ public class WarehousePheromone : MonoBehaviour
     //  pheroDelivering[eIdx * shelfCount + sIdx][ci * gridD + cj]
     //  pheroReturning [sIdx * exitCount  + eIdx][ci * gridD + cj]
     // ==========================================
-    private float[][] pheroDelivering;
-    private float[][] pheroReturning;
+    private float[][] pheroRoutes;
 
     private int entranceCount;  // 入口の総数
     private int exitCount;      // 出口の総数 (== entranceCount)
     private int shelfCount;     // 棚の総数
 
-    private List<ShelfUnit>           allShelves    = new List<ShelfUnit>();
-    private Dictionary<ShelfUnit,int> shelfIndexMap = new Dictionary<ShelfUnit,int>();
+    private List<ShelfUnit> allShelves = new List<ShelfUnit>();
+    private Dictionary<ShelfUnit, int> shelfIndexMap = new Dictionary<ShelfUnit, int>();
 
-    private int  tickCount   = 0;
+    private int tickCount = 0;
     private bool initialized = false;
 
     // ==========================================
     //  可視化タイル
     // ==========================================
-    private GameObject            vizParent;
-    private Renderer[]            vizTiles;      // [ci * gridD + cj] — 1Dフラット
-    private Material              vizMaterial;
+    private GameObject vizParent;
+    private Renderer[] vizTiles;      // [ci * gridD + cj] — 1Dフラット
+    private Material vizMaterial;
     private MaterialPropertyBlock vizPropBlock;
-    private int                   vizFrameCount = 0;
-    private static readonly int   ColorID = Shader.PropertyToID("_Color");
+    private int vizFrameCount = 0;
+    private static readonly int ColorID = Shader.PropertyToID("_Color");
 
     // ==========================================
     //  初期化
@@ -141,17 +168,17 @@ public class WarehousePheromone : MonoBehaviour
             warehouseGenerator.Generate();
 
         genTransform = warehouseGenerator.transform;
-        warehouseW   = warehouseGenerator.warehouseWidth;
-        warehouseD   = warehouseGenerator.warehouseDepth;
+        warehouseW = warehouseGenerator.warehouseWidth;
+        warehouseD = warehouseGenerator.warehouseDepth;
 
         cellSize = Mathf.Max(0.5f, cellSize);
-        gridW     = Mathf.CeilToInt(warehouseW / cellSize);
-        gridD     = Mathf.CeilToInt(warehouseD / cellSize);
+        gridW = Mathf.CeilToInt(warehouseW / cellSize);
+        gridD = Mathf.CeilToInt(warehouseD / cellSize);
         cellCount = gridW * gridD;
 
         // 入口数 (TrainingManager の CalculateEntrances と同じ順序)
         entranceCount = CalcEntranceCount();
-        exitCount     = entranceCount;
+        exitCount = entranceCount;
 
         // 棚収集 + マップ確保
         CollectShelves();
@@ -165,8 +192,7 @@ public class WarehousePheromone : MonoBehaviour
         if (WarehousePerformance.IsEnabled(p => p.DebugLog))
             Debug.Log($"[Pheromone] 初期化完了 — グリッド:{gridW}×{gridD} (cell={cellSize}m) " +
                       $"入口:{entranceCount} 棚:{shelfCount} " +
-                      $"Delivering:{pheroDelivering.Length}マップ " +
-                      $"Returning:{pheroReturning.Length}マップ");
+                      $"Routes:{pheroRoutes.Length}マップ");
     }
 
     // ==========================================
@@ -176,8 +202,8 @@ public class WarehousePheromone : MonoBehaviour
     {
         if (warehouseGenerator == null) return 1;
         int count = 0;
-        if (warehouseGenerator.doorWest)  count++;
-        if (warehouseGenerator.doorEast)  count++;
+        if (warehouseGenerator.doorWest) count++;
+        if (warehouseGenerator.doorEast) count++;
         if (warehouseGenerator.doorSouth) count++;
         if (warehouseGenerator.doorNorth) count++;
         return Mathf.Max(1, count);
@@ -200,33 +226,21 @@ public class WarehousePheromone : MonoBehaviour
         }
         shelfCount = allShelves.Count;
 
-        // フラット配列を確保
-        // Delivering: [entranceCount × shelfCount] マップ
-        int delCount = entranceCount * Mathf.Max(1, shelfCount);
-        pheroDelivering = new float[delCount][];
-        for (int i = 0; i < delCount; i++)
-            pheroDelivering[i] = new float[cellCount];
-
-        // Returning: [shelfCount × exitCount] マップ
-        int retCount = Mathf.Max(1, shelfCount) * exitCount;
-        pheroReturning = new float[retCount][];
-        for (int i = 0; i < retCount; i++)
-            pheroReturning[i] = new float[cellCount];
+        // Route: [entranceCount × shelfCount × exitCount] マップ
+        int routeCount = entranceCount * Mathf.Max(1, shelfCount) * exitCount;
+        pheroRoutes = new float[routeCount][];
+        for (int i = 0; i < routeCount; i++)
+            pheroRoutes[i] = new float[cellCount];
     }
 
     // ==========================================
     //  インデックス計算ヘルパー
     // ==========================================
 
-    /// <summary> pheroDelivering のインデックス </summary>
-    int DeliveringKey(int eIdx, int sIdx)
-        => Mathf.Clamp(eIdx, 0, entranceCount - 1) * shelfCount
-         + Mathf.Clamp(sIdx, 0, shelfCount - 1);
-
-    /// <summary> pheroReturning のインデックス </summary>
-    int ReturningKey(int sIdx, int xIdx)
-        => Mathf.Clamp(sIdx, 0, shelfCount - 1) * exitCount
-         + Mathf.Clamp(xIdx, 0, exitCount - 1);
+    int RouteKey(int eIdx, int sIdx, int xIdx)
+        => (Mathf.Clamp(eIdx, 0, entranceCount - 1) * shelfCount
+          + Mathf.Clamp(sIdx, 0, shelfCount - 1)) * exitCount
+          + Mathf.Clamp(xIdx, 0, exitCount - 1);
 
     // ==========================================
     //  公開: 棚インデックス取得
@@ -277,8 +291,7 @@ public class WarehousePheromone : MonoBehaviour
     void Evaporate()
     {
         float factor = 1f - evapRate;
-        EvaporateMaps(pheroDelivering, factor);
-        EvaporateMaps(pheroReturning,  factor);
+        EvaporateMaps(pheroRoutes, factor);
     }
 
     static void EvaporateMaps(float[][] maps, float factor)
@@ -319,6 +332,7 @@ public class WarehousePheromone : MonoBehaviour
     public float StepPheromone(Vector3 worldPos, bool isDelivering,
                                 int entranceIdx, int shelfIdx, int exitIdx)
     {
+        if (!usePheromone || pheromoneMode == WarehousePheromoneMode.None) return 0f;
         EnsureInitialized();
         if (!initialized || shelfCount == 0) return 0f;
 
@@ -326,24 +340,57 @@ public class WarehousePheromone : MonoBehaviour
         if (ci < 0) return 0f;
 
         int cellIdx = ci * gridD + cj;
-        float[] map;
+        if (entranceIdx < 0 || shelfIdx < 0 || exitIdx < 0) return 0f;
+        float[] map = pheroRoutes[RouteKey(entranceIdx, shelfIdx, exitIdx)];
 
-        if (isDelivering)
-        {
-            if (entranceIdx < 0 || shelfIdx < 0) return 0f;
-            map = pheroDelivering[DeliveringKey(entranceIdx, shelfIdx)];
-        }
-        else
-        {
-            if (shelfIdx < 0 || exitIdx < 0) return 0f;
-            map = pheroReturning[ReturningKey(shelfIdx, exitIdx)];
-        }
-
-        float prev   = map[cellIdx];
+        float prev = map[cellIdx];
         float reward = Mathf.Log(prev + 1f) * rewardScale;
-        map[cellIdx] = prev + pheroQ;
+        map[cellIdx] = Mathf.Clamp(prev + pheroQ, pheromoneMinValue, pheromoneMaxValue);
 
         return reward;
+    }
+
+    public float[] GetPheromoneObservationList(Vector3 worldPos, bool isDelivering,
+                                int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        if (!usePheromone || pheromoneMode == WarehousePheromoneMode.None)
+            return new float[9];
+        EnsureInitialized();
+        float[] observations = new float[9];
+        float[] map = GetMap(isDelivering, entranceIdx, shelfIdx, exitIdx);
+        if (map == null || map.Length < cellCount) return observations;
+
+        WorldToGrid(worldPos, out int ci, out int cj);
+        if (ci < 0) return new float[9];
+        int[,] vec = new int[,]
+        {
+            {  0,  0 },
+            { -1, -1 },
+            { -1,  1 },
+            {  1,  1 },
+            {  1, -1 },
+            {  0,  1 },
+            {  1,  0 },
+            {  0, -1 },
+            { -1,  0 }
+        };
+        int ti, tj;
+        for (int i = 0; i < 9; i++)
+        {
+            ti = ci + vec[i, 0];
+            tj = cj + vec[i, 1];
+
+            if (ti < 0 || ti >= gridW || tj < 0 || tj >= gridD)
+            {
+                observations[i] = 0f;  // 壁・範囲外はゼロ
+                continue;
+            }
+
+            int cellIdx = ti * gridD + tj;
+            observations[i] = map[cellIdx];
+        }
+
+        return observations;
     }
 
     // ==========================================
@@ -356,26 +403,25 @@ public class WarehousePheromone : MonoBehaviour
     public float GetValue(Vector3 worldPos, bool isDelivering,
                           int entranceIdx, int shelfIdx, int exitIdx)
     {
+        if (!usePheromone || pheromoneMode == WarehousePheromoneMode.None) return 0f;
         if (!initialized || shelfCount == 0) return 0f;
 
         WorldToGrid(worldPos, out int ci, out int cj);
         if (ci < 0) return 0f;
 
         int cellIdx = ci * gridD + cj;
-        float[] map;
-
-        if (isDelivering)
-        {
-            if (entranceIdx < 0 || shelfIdx < 0) return 0f;
-            map = pheroDelivering[DeliveringKey(entranceIdx, shelfIdx)];
-        }
-        else
-        {
-            if (shelfIdx < 0 || exitIdx < 0) return 0f;
-            map = pheroReturning[ReturningKey(shelfIdx, exitIdx)];
-        }
+        if (entranceIdx < 0 || shelfIdx < 0 || exitIdx < 0) return 0f;
+        float[] map = pheroRoutes[RouteKey(entranceIdx, shelfIdx, exitIdx)];
 
         return map[cellIdx];
+    }
+
+    public float[] GetMap(bool isDelivering,
+                          int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        if (!initialized || shelfCount == 0) return null;
+        if (entranceIdx < 0 || shelfIdx < 0 || exitIdx < 0) return null;
+        return pheroRoutes[RouteKey(entranceIdx, shelfIdx, exitIdx)];
     }
 
     /// <summary>
@@ -383,8 +429,7 @@ public class WarehousePheromone : MonoBehaviour
     /// </summary>
     public void ResetAll()
     {
-        ClearMaps(pheroDelivering);
-        ClearMaps(pheroReturning);
+        ClearMaps(pheroRoutes);
         tickCount = 0;
     }
 
@@ -402,7 +447,10 @@ public class WarehousePheromone : MonoBehaviour
     public float GetMaxValueDelivering(int entranceIdx, int shelfIdx)
     {
         if (!initialized || shelfCount == 0) return 0f;
-        return MaxOfMap(pheroDelivering[DeliveringKey(entranceIdx, shelfIdx)]);
+        float max = 0f;
+        for (int x = 0; x < exitCount; x++)
+            max = Mathf.Max(max, MaxOfMap(pheroRoutes[RouteKey(entranceIdx, shelfIdx, x)]));
+        return max;
     }
 
     /// <summary>
@@ -411,7 +459,10 @@ public class WarehousePheromone : MonoBehaviour
     public float GetMaxValueReturning(int shelfIdx, int exitIdx)
     {
         if (!initialized || shelfCount == 0) return 0f;
-        return MaxOfMap(pheroReturning[ReturningKey(shelfIdx, exitIdx)]);
+        float max = 0f;
+        for (int e = 0; e < entranceCount; e++)
+            max = Mathf.Max(max, MaxOfMap(pheroRoutes[RouteKey(e, shelfIdx, exitIdx)]));
+        return max;
     }
 
     // ==========================================
@@ -447,7 +498,7 @@ public class WarehousePheromone : MonoBehaviour
     {
         if (!initialized || shelfCount == 0)
             return (0f, 0f, 0);
-        return CalcMapStats(pheroDelivering[DeliveringKey(eIdx, sIdx)]);
+        return CalcAggregateRouteStats(eIdx, sIdx, -1);
     }
 
     /// <summary>
@@ -458,7 +509,132 @@ public class WarehousePheromone : MonoBehaviour
     {
         if (!initialized || shelfCount == 0)
             return (0f, 0f, 0);
-        return CalcMapStats(pheroReturning[ReturningKey(sIdx, xIdx)]);
+        return CalcAggregateRouteStats(-1, sIdx, xIdx);
+    }
+
+    (float total, float max, int activeCells) CalcAggregateRouteStats(int eFilter, int sFilter, int xFilter)
+    {
+        float[] aggregate = new float[cellCount];
+
+        for (int e = 0; e < entranceCount; e++)
+        {
+            if (eFilter >= 0 && e != eFilter) continue;
+            for (int s = 0; s < shelfCount; s++)
+            {
+                if (sFilter >= 0 && s != sFilter) continue;
+                for (int x = 0; x < exitCount; x++)
+                {
+                    if (xFilter >= 0 && x != xFilter) continue;
+                    float[] src = pheroRoutes[RouteKey(e, s, x)];
+                    for (int i = 0; i < cellCount; i++)
+                        aggregate[i] += src[i];
+                }
+            }
+        }
+
+        return CalcMapStats(aggregate);
+    }
+
+    public PheromoneUsageStats GetUsageStats(float activeThreshold = 0.001f)
+    {
+        EnsureInitialized();
+
+        var stats = new PheromoneUsageStats
+        {
+            gridW = gridW,
+            gridD = gridD,
+            cellCount = cellCount,
+            deliveringMapCount = pheroRoutes != null ? pheroRoutes.Length : 0,
+            returningMapCount = 0,
+        };
+
+        stats.mapCount = stats.deliveringMapCount + stats.returningMapCount;
+        stats.totalMapCells = stats.mapCount * cellCount;
+
+        bool[] uniqueActive = cellCount > 0 ? new bool[cellCount] : null;
+
+        AddUsageStats(pheroRoutes, activeThreshold, uniqueActive,
+                      ref stats.deliveringTotal,
+                      ref stats.deliveringMax,
+                      ref stats.deliveringActiveMapCells);
+
+        stats.total = stats.deliveringTotal + stats.returningTotal;
+        stats.max = Mathf.Max(stats.deliveringMax, stats.returningMax);
+        stats.activeMapCells = stats.deliveringActiveMapCells + stats.returningActiveMapCells;
+
+        if (uniqueActive != null)
+        {
+            for (int i = 0; i < uniqueActive.Length; i++)
+                if (uniqueActive[i]) stats.uniqueActiveCells++;
+        }
+
+        stats.activeMapCellRatio = stats.totalMapCells > 0
+            ? (float)stats.activeMapCells / stats.totalMapCells : 0f;
+        stats.uniqueActiveCellRatio = stats.cellCount > 0
+            ? (float)stats.uniqueActiveCells / stats.cellCount : 0f;
+
+        return stats;
+    }
+
+    public bool TryGetRouteMap(int entranceIdx, int shelfIdx, int exitIdx, float[] output)
+    {
+        EnsureInitialized();
+
+        if (!initialized || shelfCount == 0 || output == null || output.Length < cellCount)
+            return false;
+        if (entranceIdx < 0 || entranceIdx >= entranceCount ||
+            shelfIdx < 0 || shelfIdx >= shelfCount ||
+            exitIdx < 0 || exitIdx >= exitCount)
+            return false;
+
+        float[] route = pheroRoutes[RouteKey(entranceIdx, shelfIdx, exitIdx)];
+        for (int i = 0; i < cellCount; i++)
+            output[i] = route[i];
+
+        return true;
+    }
+
+    public (float total, float max, int activeCells) CalcValuesStats(float[] values, float activeThreshold = 0.001f)
+    {
+        if (values == null) return (0f, 0f, 0);
+
+        float total = 0f;
+        float max = 0f;
+        int active = 0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            float v = values[i];
+            if (v <= activeThreshold) continue;
+
+            total += v;
+            active++;
+            if (v > max) max = v;
+        }
+        return (total, max, active);
+    }
+
+    static void AddUsageStats(float[][] maps, float threshold, bool[] uniqueActive,
+                              ref float total, ref float max, ref int activeMapCells)
+    {
+        if (maps == null) return;
+
+        for (int m = 0; m < maps.Length; m++)
+        {
+            float[] map = maps[m];
+            if (map == null) continue;
+
+            for (int i = 0; i < map.Length; i++)
+            {
+                float v = map[i];
+                if (v <= threshold) continue;
+
+                total += v;
+                activeMapCells++;
+                if (v > max) max = v;
+                if (uniqueActive != null && i < uniqueActive.Length)
+                    uniqueActive[i] = true;
+            }
+        }
     }
 
     static (float total, float max, int activeCells) CalcMapStats(float[] map)
@@ -485,9 +661,9 @@ public class WarehousePheromone : MonoBehaviour
     /// </summary>
     public void SetVizTarget(bool isDelivering, int eOrXIdx, ShelfUnit shelf)
     {
-        visualizeDelivering    = isDelivering;
+        visualizeDelivering = isDelivering;
         visualizeEntranceIndex = eOrXIdx;
-        visualizeShelf         = shelf;
+        visualizeShelf = shelf;
     }
 
     static float MaxOfMap(float[] map)
@@ -521,7 +697,7 @@ public class WarehousePheromone : MonoBehaviour
         vizMaterial.color = Color.clear;
 
         // タイルを1Dフラット配列で管理 (ci * gridD + cj)
-        vizTiles    = new Renderer[cellCount];
+        vizTiles = new Renderer[cellCount];
         vizPropBlock = new MaterialPropertyBlock();
 
         float tileY = 0.02f;
@@ -538,14 +714,14 @@ public class WarehousePheromone : MonoBehaviour
                 float lz = cj * cellSize + cellSize * 0.5f;
                 quad.transform.localPosition = new Vector3(lx, tileY, lz);
                 quad.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-                quad.transform.localScale    = new Vector3(cellSize * 0.95f, cellSize * 0.95f, 1f);
+                quad.transform.localScale = new Vector3(cellSize * 0.95f, cellSize * 0.95f, 1f);
 
                 Destroy(quad.GetComponent<Collider>());
 
                 var rend = quad.GetComponent<Renderer>();
                 rend.material = vizMaterial;
                 rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                rend.receiveShadows    = false;
+                rend.receiveShadows = false;
 
                 vizTiles[ci * gridD + cj] = rend;
             }
@@ -575,12 +751,12 @@ public class WarehousePheromone : MonoBehaviour
     {
         // 表示用の合算バッファ (スタック上の仮配列を避け、毎回 new せず使い回す)
         float[] displayMap = new float[cellCount];
-        float   maxVal     = 0f;
+        float maxVal = 0f;
 
         if (visualizeDelivering)
-            AggregateForViz(pheroDelivering, true, displayMap, ref maxVal);
+            AggregateForViz(true, displayMap, ref maxVal);
         else
-            AggregateForViz(pheroReturning, false, displayMap, ref maxVal);
+            AggregateForViz(false, displayMap, ref maxVal);
 
         // タイルの色を更新
         for (int i = 0; i < cellCount; i++)
@@ -606,41 +782,43 @@ public class WarehousePheromone : MonoBehaviour
     /// Inspector 設定 (visualizeEntranceIndex / visualizeShelf) に従い
     /// maps を displayMap に合算する。
     /// </summary>
-    void AggregateForViz(float[][] maps, bool isDelivering,
-                          float[] displayMap, ref float maxVal)
+    void AggregateForViz(bool isDelivering, float[] displayMap, ref float maxVal)
     {
-        if (maps == null || shelfCount == 0) return;
+        if (pheroRoutes == null || shelfCount == 0) return;
 
         int visualSIdx = (visualizeShelf != null)
             ? GetShelfIndex(visualizeShelf) : -1;
 
         if (isDelivering)
         {
-            // pheroDelivering[eIdx * shelfCount + sIdx]
+            // Route maps aggregated by entrance -> shelf, across all exits.
             for (int e = 0; e < entranceCount; e++)
             {
                 if (visualizeEntranceIndex >= 0 && e != visualizeEntranceIndex) continue;
 
                 int sStart = visualSIdx >= 0 ? visualSIdx : 0;
-                int sEnd   = visualSIdx >= 0 ? visualSIdx : shelfCount - 1;
+                int sEnd = visualSIdx >= 0 ? visualSIdx : shelfCount - 1;
 
                 for (int s = sStart; s <= sEnd; s++)
                 {
-                    float[] src = maps[e * shelfCount + s];
-                    if (src == null) continue;
-                    for (int i = 0; i < cellCount; i++)
+                    for (int x = 0; x < exitCount; x++)
                     {
-                        displayMap[i] += src[i];
-                        if (displayMap[i] > maxVal) maxVal = displayMap[i];
+                        float[] src = pheroRoutes[RouteKey(e, s, x)];
+                        if (src == null) continue;
+                        for (int i = 0; i < cellCount; i++)
+                        {
+                            displayMap[i] += src[i];
+                            if (displayMap[i] > maxVal) maxVal = displayMap[i];
+                        }
                     }
                 }
             }
         }
         else
         {
-            // pheroReturning[sIdx * exitCount + xIdx]
+            // Route maps aggregated by shelf -> exit, across all entrances.
             int sStart = visualSIdx >= 0 ? visualSIdx : 0;
-            int sEnd   = visualSIdx >= 0 ? visualSIdx : shelfCount - 1;
+            int sEnd = visualSIdx >= 0 ? visualSIdx : shelfCount - 1;
 
             for (int s = sStart; s <= sEnd; s++)
             {
@@ -648,12 +826,15 @@ public class WarehousePheromone : MonoBehaviour
                 {
                     if (visualizeEntranceIndex >= 0 && x != visualizeEntranceIndex) continue;
 
-                    float[] src = maps[s * exitCount + x];
-                    if (src == null) continue;
-                    for (int i = 0; i < cellCount; i++)
+                    for (int e = 0; e < entranceCount; e++)
                     {
-                        displayMap[i] += src[i];
-                        if (displayMap[i] > maxVal) maxVal = displayMap[i];
+                        float[] src = pheroRoutes[RouteKey(e, s, x)];
+                        if (src == null) continue;
+                        for (int i = 0; i < cellCount; i++)
+                        {
+                            displayMap[i] += src[i];
+                            if (displayMap[i] > maxVal) maxVal = displayMap[i];
+                        }
                     }
                 }
             }
@@ -680,9 +861,9 @@ public class WarehousePheromone : MonoBehaviour
         float   maxVal     = 0f;
 
         if (visualizeDelivering)
-            AggregateForViz(pheroDelivering, true, displayMap, ref maxVal);
+            AggregateForViz(true, displayMap, ref maxVal);
         else
-            AggregateForViz(pheroReturning, false, displayMap, ref maxVal);
+            AggregateForViz(false, displayMap, ref maxVal);
 
         if (maxVal <= 0f) return;
 

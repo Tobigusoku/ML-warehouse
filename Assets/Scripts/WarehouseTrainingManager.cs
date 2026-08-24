@@ -51,9 +51,8 @@ public class WarehouseTrainingManager : MonoBehaviour
     [Tooltip("スロット間隔 (エージェント1台分の幅)")]
     public float slotSpacing = 1.5f;
 
-    [Header("===== テスト設定 =====")]
-    public bool  isTestMode    = false;
-    public float limitTestTime = 300f;
+    [HideInInspector]
+    public int configuredAgentCount = 0;
 
     // ==========================================
     //  入口情報
@@ -93,7 +92,6 @@ public class WarehouseTrainingManager : MonoBehaviour
         = new Dictionary<WarehouseRobotAgent, AgentState>();
     private HashSet<ShelfUnit> assignedShelves = new HashSet<ShelfUnit>();
     private bool initialized = false;
-    private float timer = 0f;
 
     // ==========================================
     //  初期化
@@ -105,36 +103,7 @@ public class WarehouseTrainingManager : MonoBehaviour
 
     void Update()
     {
-        timer += Time.unscaledDeltaTime;
-
-        if (isTestMode && timer >= limitTestTime)
-        {
-            int   crashToWallSum        = 0;
-            int   crashToAgentSum       = 0;
-            float totalMoveDistanceSum  = 0;
-            int   completedCountSum     = 0;
-
-            FinishTest();
-
-            foreach (var agent in robotAgents)
-            {
-                crashToWallSum       += agent.crashToWall;
-                crashToAgentSum      += agent.crashToAgent;
-                totalMoveDistanceSum += agent.totalMoveDistance;
-                completedCountSum    += agent.CompletedCount;
-            }
-            Debug.Log("crashToWall :"       + crashToWallSum);
-            Debug.Log("crashToAgent :"      + crashToAgentSum);
-            Debug.Log("totalMoveDistance :" + totalMoveDistanceSum);
-            Debug.Log("completedCount :"    + completedCountSum);
-        }
-    }
-
-    void FinishTest()
-    {
-#if UNITY_EDITOR
-        EditorApplication.isPlaying = false;
-#endif
+        // Test execution is handled by WarehouseModelTestRunner.
     }
 
     void EnsureInitialized()
@@ -717,6 +686,7 @@ public class WarehouseTrainingManager : MonoBehaviour
         agent.trainingManager = this;
         agent.envRoot         = envRoot;
         agent.pheromone       = GetComponent<WarehousePheromone>();
+        WarehouseExperimentRuntime.ApplyAgent(agent, WarehouseExperimentRuntime.ActiveConfig);
 
         if (WarehousePerformance.IsEnabled(p => p.DebugLog))
             Debug.Log($"[TrainingManager] ロボット '{robotGo.name}' を自動生成");

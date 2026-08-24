@@ -125,7 +125,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   m_BrainParameters:
-    VectorObservationSize: 56
+    VectorObservationSize: 65
     NumStackedVectorObservations: 1
     m_ActionSpec:
       m_NumContinuousActions: 2
@@ -134,7 +134,7 @@ MonoBehaviour:
     VectorActionDescriptions: []
     VectorActionSpaceType: 1
     hasUpgradedBrainParametersWithActionSpec: 1
-  m_Model: {fileID: 5022602860645237092, guid: 4a958fc43221ec746ba8bfbadf5ae998, type: 3}
+  m_Model: {fileID: 5022602860645237092, guid: dc0862c211eab894783d66bbd537b5fa, type: 3}
   m_InferenceDevice: 0
   m_BehaviorType: 0
   m_BehaviorName: WarehouseRobot
@@ -192,6 +192,8 @@ MonoBehaviour:
   totalMoveDistance: 0
   crashToWall: 0
   crashToAgent: 0
+  spawnEntranceIndex: 0
+  targetExitIndex: 0
   debugMoveInput: 0
   debugTurnInput: 0
   debugSpeed: 0
@@ -262,8 +264,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   showHUD: 1
-  showRayDetails: 0
-  hudPosition: {x: 10, y: 10}
+  hudRight: 10
+  hudTop: 10
   hudWidth: 340
+  topK: 8
+  updateInterval: 30
   fontSize: 20
   bgAlpha: 0.8

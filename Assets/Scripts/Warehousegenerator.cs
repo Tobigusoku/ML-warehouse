@@ -6,8 +6,16 @@ using System.Collections.Generic;
 /// 空のGameObjectにアタッチして使用してください。
 /// Inspectorからパラメータを調整し、Play時に自動生成されます。
 /// </summary>
+[DefaultExecutionOrder(-1000)]
 public class WarehouseGenerator : MonoBehaviour
 {
+    [Header("===== Experiment config =====")]
+    [Tooltip("Use a WarehouseExperimentConfig instead of the Inspector values.")]
+    public bool useExperimentConfig = false;
+    public WarehouseExperimentConfig experimentConfig;
+    [Tooltip("Fallback experiment/run ID when MLAGENTS_RUN_ID and --run-id are unavailable.")]
+    public string experimentRunId = "";
+
     // ===== プリセット =====
     [Header("===== プリセット (基準値) =====")]
     [Tooltip("基準値を選択して適用できます。Custom なら手動設定を使用します。")]
@@ -153,6 +161,7 @@ public class WarehouseGenerator : MonoBehaviour
 
     void Awake()
     {
+        WarehouseExperimentRuntime.ApplyToEnvironment(this);
         if (!isGenerated)
         {
             CleanupExistingWarehouse();
