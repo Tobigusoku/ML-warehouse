@@ -16,6 +16,10 @@ public class WarehouseGenerator : MonoBehaviour
     [Tooltip("Fallback experiment/run ID when MLAGENTS_RUN_ID and --run-id are unavailable.")]
     public string experimentRunId = "";
 
+    [Header("===== Environment preset =====")]
+    [Tooltip("Versioned layout settings. Selecting this asset applies its values to the fields below.")]
+    public WarehouseEnvironmentPreset environmentPreset;
+
     // ===== プリセット =====
     [Header("===== プリセット (基準値) =====")]
     [Tooltip("基準値を選択して適用できます。Custom なら手動設定を使用します。")]
@@ -162,6 +166,9 @@ public class WarehouseGenerator : MonoBehaviour
     void Awake()
     {
         WarehouseExperimentRuntime.ApplyToEnvironment(this);
+        if (!useExperimentConfig && environmentPreset != null)
+            ApplyEnvironmentPreset(environmentPreset);
+
         if (!isGenerated)
         {
             CleanupExistingWarehouse();
@@ -219,6 +226,8 @@ public class WarehouseGenerator : MonoBehaviour
         }
 
         preset = targetPreset;
+        if (targetPreset != WarehousePreset.Custom)
+            environmentPreset = null;
 
         // 倉庫サイズ
         warehouseWidth  = data.warehouseWidth;
@@ -261,6 +270,57 @@ public class WarehouseGenerator : MonoBehaviour
     }
 
     /// <summary>
+    /// Copies a versioned environment asset into this component's existing serialized fields.
+    /// The generated layout still uses the component fields, so they remain visible in the Inspector.
+    /// </summary>
+    public void ApplyEnvironmentPreset()
+    {
+        ApplyEnvironmentPreset(environmentPreset);
+    }
+
+    public void ApplyEnvironmentPreset(WarehouseEnvironmentPreset source)
+    {
+        if (source == null)
+        {
+            Debug.LogWarning("[WarehouseGenerator] No WarehouseEnvironmentPreset is assigned.");
+            return;
+        }
+
+        environmentPreset = source;
+        // A ScriptableObject layout can differ from the fixed code presets.
+        preset = WarehousePreset.Custom;
+        warehouseWidth = source.warehouseWidth;
+        warehouseDepth = source.warehouseDepth;
+        wallHeight = source.wallHeight;
+        shelfRows = source.shelfRows;
+        shelvesPerRow = source.shelvesPerRow;
+        shelfWidth = source.shelfWidth;
+        shelfHeight = source.shelfHeight;
+        shelfDepth = source.shelfDepth;
+        aisleWidth = source.aisleWidth;
+        shelfSpacing = source.shelfSpacing;
+        shelfLateralGap = source.shelfLateralGap;
+        shelfPaired = source.shelfPaired;
+        crateSpawnChance = source.crateSpawnChance;
+        palletSpawnChance = source.palletSpawnChance;
+        doorWidth = source.doorWidth;
+        doorHeight = source.doorHeight;
+        doorWest = source.doorWest;
+        doorEast = source.doorEast;
+        doorSouth = source.doorSouth;
+        doorNorth = source.doorNorth;
+        entrancePlatformDepth = source.entrancePlatformDepth;
+        generatePillars = source.generatePillars;
+        pillarSize = source.pillarSize;
+        pillarSpacingX = source.pillarSpacingX;
+        pillarSpacingZ = source.pillarSpacingZ;
+        pillarWallMargin = source.pillarWallMargin;
+        pillarAvoidShelves = source.pillarAvoidShelves;
+        pillarShelfClearance = source.pillarShelfClearance;
+        seed = source.environmentSeed;
+    }
+
+    /// <summary>
     /// 現在の設定値から最も近いプリセットを推定して返す (参考用)
     /// </summary>
     public WarehousePreset DetectClosestPreset()
@@ -300,6 +360,9 @@ public class WarehouseGenerator : MonoBehaviour
     /// </summary>
     public void Generate()
     {
+        if (!useExperimentConfig && environmentPreset != null)
+            ApplyEnvironmentPreset(environmentPreset);
+
         // プリセットがCustom以外なら自動適用
         if (preset != WarehousePreset.Custom)
             ApplyPreset(preset);
@@ -1066,6 +1129,35 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
     public override void OnInspectorGUI()
     {
         var generator = (WarehouseGenerator)target;
+        serializedObject.Update();
+
+        UnityEditor.EditorGUILayout.Space(5);
+        UnityEditor.EditorGUILayout.BeginVertical("box");
+        GUILayout.Label("Environment Preset", UnityEditor.EditorStyles.boldLabel);
+        UnityEditor.EditorGUI.BeginChangeCheck();
+        var newEnvironmentPreset = (WarehouseEnvironmentPreset)UnityEditor.EditorGUILayout.ObjectField(
+            "Environment Preset", generator.environmentPreset, typeof(WarehouseEnvironmentPreset), false);
+        if (UnityEditor.EditorGUI.EndChangeCheck())
+        {
+            UnityEditor.Undo.RecordObject(generator, "Change Warehouse Environment Preset");
+            generator.environmentPreset = newEnvironmentPreset;
+            if (newEnvironmentPreset != null)
+                generator.ApplyEnvironmentPreset(newEnvironmentPreset);
+            UnityEditor.EditorUtility.SetDirty(generator);
+        }
+
+        GUI.enabled = generator.environmentPreset != null;
+        if (GUILayout.Button("Apply Environment Preset", GUILayout.Height(24)))
+        {
+            UnityEditor.Undo.RecordObject(generator, "Apply Warehouse Environment Preset");
+            generator.ApplyEnvironmentPreset();
+            UnityEditor.EditorUtility.SetDirty(generator);
+        }
+        GUI.enabled = true;
+        UnityEditor.EditorGUILayout.HelpBox(
+            "A linked asset is reapplied when the environment is generated. Clear it to use the raw Inspector values manually.",
+            UnityEditor.MessageType.None);
+        UnityEditor.EditorGUILayout.EndVertical();
 
         // ==========================================
         //  プリセット選択エリア
@@ -1126,7 +1218,8 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
         //  デフォルトInspector
         // ==========================================
         UnityEditor.EditorGUILayout.Space(8);
-        DrawDefaultInspector();
+        DrawPropertiesExcluding(serializedObject, "m_Script", "preset", "environmentPreset");
+        serializedObject.ApplyModifiedProperties();
 
         // ==========================================
         //  生成ボタンエリア

@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -12,6 +14,24 @@ public enum WarehousePheromoneMode
     Shared,
     PhaseSeparated,
     TaskSeparated
+}
+
+[Serializable]
+public class WarehouseExperimentProvenance
+{
+    public string runId;
+    public bool usePreset;
+    public string presetId;
+    public string presetAssetName;
+    public string presetAssetGuid;
+    public string presetContentHash;
+    public string configFingerprintVersion;
+    public string environmentPresetId;
+    public string environmentPresetAssetName;
+    public string environmentPresetAssetGuid;
+    public string environmentPresetContentHash;
+    public string sceneName;
+    public string savedAt;
 }
 
 /// <summary>
@@ -34,7 +54,12 @@ public class WarehouseExperimentConfig : ScriptableObject
     public float pheromoneRewardScale = 0.0002f;
     public float pheromoneCellSize = 2f;
 
-    [Header("Environment")]
+    [Header("Environment preset")]
+    [Tooltip("Preferred versioned layout asset. When assigned, it takes priority over the legacy fields below.")]
+    public WarehouseEnvironmentPreset environmentPreset;
+
+    [Header("Legacy environment values")]
+    [Tooltip("Kept for compatibility with existing config assets. New configs should use Environment Preset.")]
     public WarehousePreset warehousePreset = WarehousePreset.Custom;
     public int warehouseWidth = 20;
     public int warehouseDepth = 55;
@@ -102,6 +127,7 @@ public class WarehouseExperimentConfig : ScriptableObject
 /// </summary>
 public static class WarehouseExperimentRuntime
 {
+    public const string ConfigFingerprintVersion = "public-fields-v1";
     private static bool applied;
     private static bool logged;
     private static bool recorded;
@@ -111,6 +137,68 @@ public static class WarehouseExperimentRuntime
 
     public static WarehouseExperimentConfig ActiveConfig => activeConfig;
     public static bool UsePreset => activeUsePreset;
+
+    public static string GetConfigAssetGuid(WarehouseExperimentConfig config)
+    {
+#if UNITY_EDITOR
+        if (config == null) return string.Empty;
+        string path = UnityEditor.AssetDatabase.GetAssetPath(config);
+        return string.IsNullOrEmpty(path) ? string.Empty : UnityEditor.AssetDatabase.AssetPathToGUID(path);
+#else
+        return string.Empty;
+#endif
+    }
+
+    public static string GetConfigContentHash(WarehouseExperimentConfig config)
+    {
+        return GetPublicFieldContentHash(config);
+    }
+
+    public static string GetEnvironmentPresetAssetGuid(WarehouseEnvironmentPreset preset)
+    {
+#if UNITY_EDITOR
+        if (preset == null) return string.Empty;
+        string path = UnityEditor.AssetDatabase.GetAssetPath(preset);
+        return string.IsNullOrEmpty(path) ? string.Empty : UnityEditor.AssetDatabase.AssetPathToGUID(path);
+#else
+        return string.Empty;
+#endif
+    }
+
+    public static string GetEnvironmentPresetContentHash(WarehouseEnvironmentPreset preset)
+    {
+        return GetPublicFieldContentHash(preset);
+    }
+
+    static string GetPublicFieldContentHash(object target)
+    {
+        if (target == null) return string.Empty;
+
+        var fields = new List<FieldInfo>(target.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public));
+        fields.Sort((left, right) => string.CompareOrdinal(left.Name, right.Name));
+        var content = new StringBuilder();
+        foreach (FieldInfo field in fields)
+        {
+            // Unity object references have instance-specific serialization. Their identity and
+            // content are recorded separately in the provenance JSON.
+            if (typeof(UnityEngine.Object).IsAssignableFrom(field.FieldType)) continue;
+            object value = field.GetValue(target);
+            string valueText = value is IFormattable formattable
+                ? formattable.ToString(null, CultureInfo.InvariantCulture)
+                : value?.ToString() ?? "<null>";
+            content.Append(field.Name).Append(':').Append(valueText.Length).Append(':').Append(valueText).Append('\n');
+        }
+
+        byte[] bytes = Encoding.UTF8.GetBytes(content.ToString());
+        using (SHA256 sha256 = SHA256.Create())
+        {
+            byte[] hash = sha256.ComputeHash(bytes);
+            var builder = new StringBuilder(hash.Length * 2);
+            foreach (byte value in hash)
+                builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
+            return builder.ToString();
+        }
+    }
 
     public static void ApplyToEnvironment(WarehouseGenerator generator)
     {
@@ -179,6 +267,12 @@ public static class WarehouseExperimentRuntime
 
     static void ApplyGenerator(WarehouseGenerator g, WarehouseExperimentConfig c)
     {
+        if (c.environmentPreset != null)
+        {
+            g.ApplyEnvironmentPreset(c.environmentPreset);
+            return;
+        }
+
         g.preset = c.warehousePreset;
         g.warehouseWidth = c.warehouseWidth;
         g.warehouseDepth = c.warehouseDepth;
@@ -249,6 +343,7 @@ public static class WarehouseExperimentRuntime
         float evap = c != null ? c.pheromoneEvaporationRate : (p != null ? p.evapRate : 0f);
         float q = c != null ? c.pheromoneSecretionAmount : (p != null ? p.pheroQ : 0f);
         int count = c != null ? c.agentCount : (m != null ? m.robotAgents.Count : 0);
+        WarehouseEnvironmentPreset environment = c != null ? c.environmentPreset : (g != null ? g.environmentPreset : null);
         Debug.Log("Experiment Config\n" +
                   $"ID: {id}\n" +
                   $"Source: {(preset ? "Preset" : "Inspector")}\n" +
@@ -256,7 +351,8 @@ public static class WarehouseExperimentRuntime
                   $"Pheromone Mode: {mode}\n" +
                   $"Evaporation Rate: {evap.ToString(CultureInfo.InvariantCulture)}\n" +
                   $"Secretion Amount: {q.ToString(CultureInfo.InvariantCulture)}\n" +
-                  $"Agent Count: {count}");
+                  $"Agent Count: {count}\n" +
+                  $"Environment Preset: {(environment != null ? environment.name + " (" + environment.presetId + ")" : "Inspector / legacy values")}");
     }
 
     static void Record(WarehouseGenerator g, WarehouseExperimentConfig c, bool preset)
@@ -290,29 +386,22 @@ public static class WarehouseExperimentRuntime
 
     static string BuildJson(string runId, WarehouseExperimentConfig c, bool preset, string scene)
     {
-        string id = c != null ? c.configId : "";
-        string asset = c != null ? c.name : "";
-        string guid = "";
-#if UNITY_EDITOR
-        if (c != null)
+        var provenance = new WarehouseExperimentProvenance
         {
-            string path = UnityEditor.AssetDatabase.GetAssetPath(c);
-            guid = string.IsNullOrEmpty(path) ? "" : UnityEditor.AssetDatabase.AssetPathToGUID(path);
-        }
-#endif
-        return "{\n" +
-            $"  \"runId\": \"{Escape(runId)}\",\n" +
-            $"  \"usePreset\": {preset.ToString().ToLowerInvariant()},\n" +
-            $"  \"presetId\": \"{Escape(id)}\",\n" +
-            $"  \"presetAssetName\": \"{Escape(asset)}\",\n" +
-            $"  \"presetAssetGuid\": \"{Escape(guid)}\",\n" +
-            $"  \"sceneName\": \"{Escape(scene)}\",\n" +
-            $"  \"savedAt\": \"{DateTime.Now.ToString("o", CultureInfo.InvariantCulture)}\"\n" +
-            "}\n";
-    }
-
-    static string Escape(string value)
-    {
-        return (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
+            runId = runId ?? string.Empty,
+            usePreset = preset,
+            presetId = c != null ? c.configId : string.Empty,
+            presetAssetName = c != null ? c.name : string.Empty,
+            presetAssetGuid = GetConfigAssetGuid(c),
+            presetContentHash = GetConfigContentHash(c),
+            configFingerprintVersion = ConfigFingerprintVersion,
+            environmentPresetId = c != null && c.environmentPreset != null ? c.environmentPreset.presetId : string.Empty,
+            environmentPresetAssetName = c != null && c.environmentPreset != null ? c.environmentPreset.name : string.Empty,
+            environmentPresetAssetGuid = c != null ? GetEnvironmentPresetAssetGuid(c.environmentPreset) : string.Empty,
+            environmentPresetContentHash = c != null ? GetEnvironmentPresetContentHash(c.environmentPreset) : string.Empty,
+            sceneName = scene ?? string.Empty,
+            savedAt = DateTime.Now.ToString("o", CultureInfo.InvariantCulture)
+        };
+        return JsonUtility.ToJson(provenance, true) + "\n";
     }
 }
