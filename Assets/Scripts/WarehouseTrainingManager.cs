@@ -92,6 +92,7 @@ public class WarehouseTrainingManager : MonoBehaviour
         = new Dictionary<WarehouseRobotAgent, AgentState>();
     private HashSet<ShelfUnit> assignedShelves = new HashSet<ShelfUnit>();
     private bool initialized = false;
+    public bool RuntimeReady { get; private set; }
 
     // ==========================================
     //  初期化
@@ -136,12 +137,13 @@ public class WarehouseTrainingManager : MonoBehaviour
 
     void LateInit()
     {
+        if (WarehouseExperimentRuntime.Failed) return;
         EnsureInitialized();
 
         if (autoSpawnCount > 0 && robotAgents.Count == 0)
         {
             for (int i = 0; i < autoSpawnCount; i++)
-                robotAgents.Add(SpawnRobot(i));
+                SpawnRobot(i);
         }
 
         foreach (var agent in robotAgents)
@@ -163,6 +165,9 @@ public class WarehouseTrainingManager : MonoBehaviour
                 ResetEpisode(agent);
             }
         }
+
+        WarehouseExperimentRuntime.NotifyEnvironmentReady(this);
+        RuntimeReady = !WarehouseExperimentRuntime.Failed;
 
         if (WarehousePerformance.IsEnabled(p => p.DebugLog))
             Debug.Log($"[TrainingManager] 初期化完了 — " +
@@ -455,6 +460,41 @@ public class WarehouseTrainingManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Restores shared environment state, then starts every agent on a fresh task.
+    /// </summary>
+    public void ResetForEvaluationTrial()
+    {
+        EnsureInitialized();
+
+        foreach (var state in agentStates.Values)
+        {
+            ReleaseSlot(state);
+            state.targetShelf = null;
+            SetMarkerVisible(state.shelfMarker, false);
+            SetMarkerVisible(state.exitMarker, false);
+        }
+        occupiedSlots.Clear();
+        assignedShelves.Clear();
+
+        foreach (ShelfUnit shelf in allShelves)
+            if (shelf != null) shelf.ResetForEvaluationTrial();
+
+        var phero = GetComponent<WarehousePheromone>();
+        if (phero != null) phero.ResetAll();
+
+        foreach (WarehouseRobotAgent agent in robotAgents)
+        {
+            if (agent == null) continue;
+            agent.targetShelfTransform = null;
+            agent.EndEpisode();
+        }
+        foreach (WarehouseRobotAgent agent in robotAgents)
+            if (agent != null) agent.ResetEvaluationMetrics();
+
+        Physics.SyncTransforms();
+    }
+
     ShelfUnit PickShelf()
     {
         allShelves.RemoveAll(s => s == null);
@@ -660,6 +700,9 @@ public class WarehouseTrainingManager : MonoBehaviour
     WarehouseRobotAgent SpawnRobot(int index)
     {
         var robotGo  = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        // Set references and config before Agent.OnEnable initializes physics and sensors.
+        robotGo.SetActive(false);
+        robotGo.transform.SetParent(envRoot, true);
         robotGo.name = $"WarehouseRobot_{index}";
         robotGo.transform.localScale = robotSize;
 
@@ -682,11 +725,22 @@ public class WarehouseTrainingManager : MonoBehaviour
         rb.mass = 10f; rb.drag = 1f; rb.angularDrag = 5f;
         rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
 
+        var behavior = robotGo.AddComponent<Unity.MLAgents.Policies.BehaviorParameters>();
+        behavior.BehaviorName = "WarehouseRobot";
+        behavior.BrainParameters.VectorObservationSize = 65;
+        behavior.BrainParameters.ActionSpec = Unity.MLAgents.Actuators.ActionSpec.MakeContinuous(2);
         var agent = robotGo.AddComponent<WarehouseRobotAgent>();
+        var requester = robotGo.AddComponent<Unity.MLAgents.DecisionRequester>();
+        requester.DecisionPeriod = 1;
+        requester.TakeActionsBetweenDecisions = true;
         agent.trainingManager = this;
         agent.envRoot         = envRoot;
         agent.pheromone       = GetComponent<WarehousePheromone>();
-        WarehouseExperimentRuntime.ApplyAgent(agent, WarehouseExperimentRuntime.ActiveConfig);
+        WarehouseExperimentRuntime.ApplyAgent(agent,
+            warehouseGenerator != null && warehouseGenerator.useExperimentConfig
+                ? warehouseGenerator.experimentConfig : null);
+        robotAgents.Add(agent);
+        robotGo.SetActive(true);
 
         if (WarehousePerformance.IsEnabled(p => p.DebugLog))
             Debug.Log($"[TrainingManager] ロボット '{robotGo.name}' を自動生成");

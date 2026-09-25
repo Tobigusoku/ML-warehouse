@@ -70,6 +70,8 @@ public class ShelfUnit : MonoBehaviour
     private List<Color> originalColors = new List<Color>();
     private BoxCollider shelfCollider;
     private List<GameObject> cratesOnShelf = new List<GameObject>();
+    private readonly List<GameObject> initialCrates = new List<GameObject>();
+    private bool initialStateCaptured;
     private GameObject highlightBeacon;
     private float pulsePhase;
 
@@ -90,6 +92,7 @@ public class ShelfUnit : MonoBehaviour
     {
         CacheRenderers();
         ScanExistingCrates();
+        CaptureInitialState();
     }
 
     /// <summary>
@@ -125,6 +128,48 @@ public class ShelfUnit : MonoBehaviour
         }
 
         // 各段の占有状態を更新
+        UpdateLevelOccupancy();
+    }
+
+    /// <summary>
+    /// Records crates created with the warehouse. Crates added by completed tasks are transient.
+    /// </summary>
+    public void CaptureInitialState()
+    {
+        if (initialStateCaptured) return;
+        ScanExistingCrates();
+        initialCrates.Clear();
+        initialCrates.AddRange(cratesOnShelf);
+        initialStateCaptured = true;
+        RecalculateWeight();
+    }
+
+    /// <summary>
+    /// Restores shelf state at the beginning of an independent evaluation trial.
+    /// </summary>
+    public void ResetForEvaluationTrial()
+    {
+        CaptureInitialState();
+        ForceUnhighlight();
+
+        var initial = new HashSet<GameObject>(initialCrates);
+        for (int i = transform.childCount - 1; i >= 0; i--)
+        {
+            GameObject child = transform.GetChild(i).gameObject;
+            if (child.name != "Crate" || initial.Contains(child)) continue;
+            child.SetActive(false);
+            if (Application.isPlaying) Destroy(child);
+            else DestroyImmediate(child);
+        }
+
+        cratesOnShelf.Clear();
+        foreach (GameObject crate in initialCrates)
+            if (crate != null)
+            {
+                crate.SetActive(true);
+                cratesOnShelf.Add(crate);
+            }
+        RecalculateWeight();
         UpdateLevelOccupancy();
     }
 

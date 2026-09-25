@@ -2,9 +2,12 @@
 #   python tr.py
 
 runs=3
-prefix=16smallbase
+prefix=wh_middle2Gate_single_v1_
 digits=2
 start=auto
+
+# ML-Agents trainer seeds, one per run. Reuse the same list across conditions.
+trainer_seeds=1,2,3
 
 config=warehouse_training.yaml
 env=App/ML-warehouse.exe

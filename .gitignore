@@ -51,6 +51,8 @@ Thumbs.db
 
 # Python env
 \.venv/
+__pycache__/
+*.py[cod]
 
 # ML-Agents results and model output
 results/
@@ -82,5 +84,5 @@ ProjectSettings/Packages/com.unity.testtools.codecoverage/Settings.json
 Recordings/
 ./Assets/Scenes/*
 ./Assets/Prefab/*
-./Assets/Models/*
+/Assets/Models/
 ./Assets/ML-Agents/*

@@ -165,6 +165,7 @@ public class WarehouseGenerator : MonoBehaviour
 
     void Awake()
     {
+        if (!enabled || WarehouseExperimentRuntime.Failed) return;
         WarehouseExperimentRuntime.ApplyToEnvironment(this);
         if (!useExperimentConfig && environmentPreset != null)
             ApplyEnvironmentPreset(environmentPreset);

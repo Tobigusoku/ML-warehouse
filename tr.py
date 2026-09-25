@@ -91,14 +91,50 @@ def split_args(value: str) -> list[str]:
     return [part for part in value.split() if part]
 
 
-def run_one(settings: dict[str, str], index: int) -> Path:
+def read_trainer_seeds(settings: dict[str, str], runs: int) -> list[int]:
+    raw = settings.get("trainer_seeds", "").strip()
+    if not raw:
+        raise ValueError(
+            "trainer_seeds is required (example: trainer_seeds=1,2,3)"
+        )
+
+    parts = [part for part in re.split(r"[,\s]+", raw) if part]
+    seeds = [int(part) for part in parts]
+    if len(seeds) != runs:
+        raise ValueError(
+            f"trainer_seeds contains {len(seeds)} values, but runs={runs}"
+        )
+    if any(seed < 0 for seed in seeds):
+        raise ValueError("trainer_seeds must contain non-negative integers")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError("trainer_seeds must not contain duplicate values")
+    return seeds
+
+
+def copy_legacy_provenance(env: Path, run_dir: Path, run_id: str) -> None:
+    """Recover provenance written beside an older build instead of into results_dir."""
+    target = run_dir / "unity_experiment.json"
+    if target.exists():
+        return
+
+    legacy = env.parent / "results" / run_id / "unity_experiment.json"
+    if not legacy.exists():
+        print(f"warning: Unity provenance not found: {target}", file=sys.stderr)
+        return
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy, target)
+    print(f"recovered provenance: {legacy} -> {target}", flush=True)
+
+
+def run_one(settings: dict[str, str], index: int, trainer_seed: int) -> Path:
     prefix = settings.get("prefix", "r")
     digits = int(settings.get("digits", "2"))
     run_tag = f"{prefix}{index:0{digits}d}"
 
     config = rel_path(settings.get("config", "warehouse_training.yaml"))
     env = rel_path(settings.get("env", "App/ML-warehouse.exe"))
-    results_dir = rel_path(settings.get("results", "results"))
+    results_dir = rel_path(settings.get("results", "results")).resolve()
     models_dir = rel_path(settings.get("models", "Assets/Models"))
     behavior = settings.get("behavior", "WarehouseRobot")
 
@@ -111,6 +147,8 @@ def run_one(settings: dict[str, str], index: int) -> Path:
         str(env),
         "--results-dir",
         str(results_dir),
+        "--seed",
+        str(trainer_seed),
     ]
 
     if as_bool(settings.get("no_graphics", "true"), True):
@@ -118,15 +156,21 @@ def run_one(settings: dict[str, str], index: int) -> Path:
     if as_bool(settings.get("force", "false"), False):
         cmd.append("--force")
 
-    cmd += split_args(settings.get("extra_args", ""))
+    extra_args = split_args(settings.get("extra_args", ""))
+    if any(arg == "--seed" or arg.startswith("--seed=") for arg in extra_args):
+        raise ValueError("set trainer seeds with trainer_seeds, not extra_args")
+    cmd += extra_args
 
-    print(f"\n=== training {run_tag} ===", flush=True)
+    print(f"\n=== training {run_tag} (trainer seed {trainer_seed}) ===", flush=True)
     print(" ".join(f'"{x}"' if " " in x else x for x in cmd), flush=True)
     child_env = dict(os.environ)
     child_env["MLAGENTS_RUN_ID"] = run_tag
+    child_env["MLAGENTS_TRAINER_SEED"] = str(trainer_seed)
+    child_env["WAREHOUSE_RESULTS_DIR"] = str(results_dir)
     subprocess.run(cmd, cwd=ROOT, env=child_env, check=True)
 
     run_dir = results_dir / run_tag
+    copy_legacy_provenance(env, run_dir, run_tag)
     model = find_model(run_dir, behavior)
     model = rename_model_to_run_id(model, run_dir, run_tag)
 
@@ -147,14 +191,15 @@ def main() -> int:
     prefix = settings.get("prefix", "r")
     digits = int(settings.get("digits", "2"))
     runs = int(settings.get("runs", "1"))
+    trainer_seeds = read_trainer_seeds(settings, runs)
     start = settings.get("start", "auto").lower()
     results_dir = rel_path(settings.get("results", "results"))
 
     index = next_index(models_dir, results_dir, prefix, digits) if start == "auto" else int(start)
 
     copied: list[Path] = []
-    for i in range(index, index + runs):
-        copied.append(run_one(settings, i))
+    for offset, i in enumerate(range(index, index + runs)):
+        copied.append(run_one(settings, i, trainer_seeds[offset]))
 
     print("\nDone.")
     for p in copied:

@@ -23,6 +23,11 @@ using Unity.MLAgents.Sensors;
 /// </summary>
 public class WarehouseRobotAgent : Agent
 {
+    private const string ShelfReachedStat = "Warehouse/Task/ShelfReached";
+    private const string CompletedTaskStat = "Warehouse/Task/Completed";
+    private const string TimeoutStat = "Warehouse/Episode/Timeout";
+    private const string FallStat = "Warehouse/Episode/Fall";
+
     // ==========================================
     //  フェーズ定義
     // ==========================================
@@ -239,6 +244,7 @@ public class WarehouseRobotAgent : Agent
         CreateCargoVisual();
 
         raySensor = new WarehouseObservations(this);
+        lastPosition = transform.position;
     }
 
     /// <summary>
@@ -322,6 +328,18 @@ public class WarehouseRobotAgent : Agent
         isPushingIntoAgent = false;
         bestDistToShelf = float.MaxValue;
         bestDistToExit = float.MaxValue;
+        // Episode resets teleport the robot; that teleport is not traveled distance.
+        lastPosition = transform.position;
+    }
+
+    /// <summary>Clears counters measured across one evaluation trial.</summary>
+    public void ResetEvaluationMetrics()
+    {
+        completedCount = 0;
+        crashToWall = 0;
+        crashToAgent = 0;
+        totalMoveDistance = 0f;
+        lastPosition = transform.position;
     }
 
     /// <summary>
@@ -519,6 +537,7 @@ public class WarehouseRobotAgent : Agent
         {
             Debug.LogWarning("[Robot] Fell off the platform! Resetting episode.");
             AddReward(penaltyFall);
+            RecordEvent(FallStat);
             EndEpisode();
             return;
         }
@@ -529,6 +548,7 @@ public class WarehouseRobotAgent : Agent
             if (WarehousePerformance.IsEnabled(p => p.DebugLog))
                 Debug.Log($"[Robot] Step limit reached ({maxStepLimit}). Resetting episode.");
             AddReward(penaltyTimeout);
+            RecordEvent(TimeoutStat);
             EndEpisode();
             return;
         }
@@ -667,6 +687,7 @@ public class WarehouseRobotAgent : Agent
         currentPhase = Phase.Returning;
         HideCargoVisual();
         AddReward(rewardDropAtShelf);
+        RecordEvent(ShelfReachedStat);
 
         bestDistToExit = float.MaxValue;
 
@@ -703,10 +724,16 @@ public class WarehouseRobotAgent : Agent
         {
             completedCount++;
             AddReward(rewardExitComplete);
+            RecordEvent(CompletedTaskStat);
             if (WarehousePerformance.IsEnabled(p => p.DebugLog))
                 Debug.Log($"[Robot] 入口から退出! タスク完了! (累計:{completedCount})");
             EndEpisode();
         }
+    }
+
+    static void RecordEvent(string statName)
+    {
+        Academy.Instance.StatsRecorder.Add(statName, 1f, StatAggregationMethod.Sum);
     }
 
     // ==========================================

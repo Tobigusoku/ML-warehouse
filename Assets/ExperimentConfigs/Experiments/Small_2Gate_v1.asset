@@ -1,0 +1,44 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f8b5bda9bf946284d848af894082d176, type: 3}
+  m_Name: Small_2Gate_v1
+  m_EditorClassIdentifier: 
+  presetId: Small_2Gate_v1
+  warehouseWidth: 20
+  warehouseDepth: 55
+  wallHeight: 5
+  shelfRows: 1
+  shelvesPerRow: 3
+  shelfWidth: 8
+  shelfHeight: 3
+  shelfDepth: 1.2
+  aisleWidth: 15
+  shelfSpacing: 1
+  shelfLateralGap: 10
+  shelfPaired: 0
+  crateSpawnChance: 0
+  palletSpawnChance: 0
+  doorWidth: 20
+  doorHeight: 3.5
+  doorWest: 0
+  doorEast: 0
+  doorSouth: 1
+  doorNorth: 1
+  entrancePlatformDepth: 5
+  generatePillars: 0
+  pillarSize: 0.4
+  pillarSpacingX: 8
+  pillarSpacingZ: 8
+  pillarWallMargin: 2
+  pillarAvoidShelves: 1
+  pillarShelfClearance: 0.5
+  environmentSeed: 0
