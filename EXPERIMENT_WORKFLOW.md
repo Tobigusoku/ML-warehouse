@@ -39,14 +39,16 @@ mlagents-learn --help
 - 各 `Env ML` の下にGenerator、Manager、Agentを置き、PheromoneはManagerと同じObjectに付ける。
   Managerの `Warehouse Generator` と `Env Root` は同じ環境内を参照させる。
 - 配置済みAgentはManagerの `Robot Agents` に全て1回ずつ登録する。
-  Configの `Agent Count` と実数が違う、参照切れ、無効なAgent、別環境のAgent、登録漏れは起動エラーになる。
+  Config使用時は `Agent Count` が1環境あたりの実行Agent数になる。不足分はPlay開始時に自動生成し、
+  配置数が多い場合は末尾のAgentをそのPlay中だけ無効化する。SceneやPrefab上の配置は変更しない。
+- 参照切れ、重複登録、無効な登録Agent、別環境のAgent、Managerへの登録漏れは起動エラーになる。
   EditorではPlayが停止し、Playerでは終了コード1になる。
-- 現在の `taskSeparated_v1` とEnv ML Prefabは、どちらも1環境あたり1体で一致している。
+- `Agent Count` だけを変えてPlayerを再ビルドすれば、配置済みAgentを手作業で増減せずに学習数を変更できる。
   旧runのJSONには変更前Config（16体）の内容ハッシュが残るため、旧ONNXを評価すると自動選択で
   フィンガープリント不一致になる。旧モデルだけManual Overrideを使うか、不一致停止を一時的に解除する。
   新しい正式runでは不一致停止を有効に戻し、現在のConfigから学習とテストを行う。
   学習済みConfigを上書きしてエラーを回避しない。
-- 配置済みAgentがなく、`Robot Agents` が空の場合は、ConfigのAgent数を自動生成する。
+- 配置済みAgentが不足している場合は、ConfigのAgent数まで自動生成する。
   生成されるBehaviorは `WarehouseRobot`、観測65、連続行動2、DecisionPeriod 1。
   手動設定モードでは既存の `Auto Spawn Count` を使う。
 - 全環境の初期化・数の検証が完了してからConsoleとJSONへ実数を記録する。
@@ -400,7 +402,7 @@ results/<model-name>/
 | 自動Config選択に失敗する | モデル名とrun IDが同じか、`results/<model-name>/unity_experiment.json` があるか |
 | 設定ハッシュ不一致で止まる | 学習後に同じConfig Assetを編集していないか。新しいv2 Assetを作る |
 | 起動直後にエラー | `Use Experiment Config` がオンなのにAsset未指定ではないか |
-| Agent Count不一致で停止する | Configの数と、ManagerのRobot Agents・実際に有効なAgentの数をそろえる |
+| Agent Count調整後に停止する | `Agent Count` が1以上か、Robot Agentsに参照切れ・重複・別環境Agentがないか |
 | 並列環境のConfig不一致で停止する | 全Env MLで同じConfigアセット・使用フラグ・run IDにする |
 | 学習結果にJSONがない | Editor学習なら `Experiment Run Id` がrun IDと同じか |
 | テストが始まらない | `Is Test Mode`、`Run On Play`、Models配列、Manager/Agent参照 |

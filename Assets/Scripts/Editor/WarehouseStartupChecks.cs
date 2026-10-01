@@ -47,8 +47,27 @@ public static class WarehouseStartupChecks
             Check(() =>
             {
                 var config = Config(2);
-                var g = Environment("WrongCount", config, 1);
-                ExpectRejected(() => Prepare(g), "effective agents=1");
+                var g = Environment("GrowCount", config, 1);
+                Prepare(g);
+                var manager = Manager(g);
+                manager.robotAgents[0].transform.localScale = new Vector3(1.1f, 0.5f, 0.9f);
+                Require(manager.configuredAgentCount == 2 && manager.robotAgents.Count == 1,
+                    "Config records the desired count until runtime spawning");
+                InvokeInstance(manager, "ReconcileConfiguredAgentCount");
+                Require(manager.robotAgents.Count == 2 && manager.robotAgents.TrueForAll(a => a.gameObject.activeInHierarchy),
+                    "Config spawns missing agents at runtime");
+                Require(manager.robotAgents[1].transform.localScale == manager.robotAgents[0].transform.localScale,
+                    "Spawned agents match the placed agent's physical size");
+                Invoke("ValidateAgentRoster", g, manager, false);
+            }, ref passed);
+
+            Check(() =>
+            {
+                var g = Environment("ShrinkCount", Config(1), 2);
+                WarehouseRobotAgent extra = Manager(g).robotAgents[1];
+                Prepare(g);
+                Require(Manager(g).robotAgents.Count == 1 && !extra.gameObject.activeSelf,
+                    "Config disables excess agents for the play session");
             }, ref passed);
 
             Check(() =>
@@ -116,7 +135,7 @@ public static class WarehouseStartupChecks
             {
                 var g = Environment("AutoSpawn", Config(2), 0);
                 Prepare(g);
-                Require(Manager(g).autoSpawnCount == 2, "Config drives empty-list automatic spawning");
+                Require(Manager(g).configuredAgentCount == 2, "Config drives empty-list automatic spawning");
                 ExpectRejected(() => Invoke("ValidateAgentRoster", g, Manager(g), false), "effective agents=0");
             }, ref passed);
 
@@ -250,6 +269,19 @@ public static class WarehouseStartupChecks
         {
             return typeof(WarehouseExperimentRuntime).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)
                 .Invoke(null, args);
+        }
+        catch (TargetInvocationException error)
+        {
+            throw error.InnerException ?? error;
+        }
+    }
+
+    static object InvokeInstance(object target, string name, params object[] args)
+    {
+        try
+        {
+            return target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(target, args);
         }
         catch (TargetInvocationException error)
         {

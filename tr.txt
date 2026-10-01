@@ -2,7 +2,7 @@
 #   python tr.py
 
 runs=3
-prefix=wh_middle2Gate_single_v1_
+prefix=wh_middle2Gate_single_none_v1_
 digits=2
 start=auto
 

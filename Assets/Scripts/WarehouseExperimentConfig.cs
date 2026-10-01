@@ -104,6 +104,8 @@ public class WarehouseExperimentConfig : ScriptableObject
     public int environmentSeed = 0;
 
     [Header("Agents and assignment")]
+    [Min(1)]
+    [Tooltip("Runtime agent count per warehouse environment. With this config enabled, missing agents are spawned and excess placed agents are disabled for the play session.")]
     public int agentCount = 16;
     public bool avoidDuplicateShelves = true;
     public float slotSpacing = 1.5f;
@@ -288,12 +290,15 @@ public static class WarehouseExperimentRuntime
         {
             WarehouseGenerator g = entry.Key;
             WarehouseTrainingManager manager = entry.Value;
-            manager.configuredAgentCount = g.useExperimentConfig ? g.experimentConfig.agentCount : 0;
             if (g.useExperimentConfig)
             {
                 ApplyGenerator(g, g.experimentConfig);
                 ApplyManager(manager, g.experimentConfig);
                 ApplyPheromone(manager.GetComponent<WarehousePheromone>(), g.experimentConfig);
+            }
+            else
+            {
+                manager.configuredAgentCount = 0;
             }
             foreach (var agent in manager.robotAgents)
             {
@@ -346,9 +351,10 @@ public static class WarehouseExperimentRuntime
         int expected = g.useExperimentConfig ? g.experimentConfig.agentCount : 0;
         if (g.useExperimentConfig && expected <= 0)
             throw new InvalidOperationException($"{path}: Config Agent Count must be greater than zero.");
-        if (allowPendingSpawn && unique.Count == 0 && (expected > 0 || manager.autoSpawnCount > 0)) return;
+        if (allowPendingSpawn && g.useExperimentConfig) return;
+        if (allowPendingSpawn && unique.Count == 0 && manager.autoSpawnCount > 0) return;
         if (unique.Count == 0 || (g.useExperimentConfig && unique.Count != expected))
-            throw new InvalidOperationException($"{path}: Config Agent Count={expected}, effective agents={unique.Count}. Match the placed agents and Robot Agents list to the config, or select a new config with the intended count. Existing agents are not resized automatically.");
+            throw new InvalidOperationException($"{path}: Config Agent Count={expected}, effective agents={unique.Count} after runtime reconciliation.");
     }
 
     public static void NotifyEnvironmentReady(WarehouseTrainingManager manager)
@@ -471,9 +477,7 @@ public static class WarehouseExperimentRuntime
     {
         m.avoidDuplicateShelves = c.avoidDuplicateShelves;
         m.slotSpacing = c.slotSpacing;
-        m.configuredAgentCount = c.agentCount;
-        if (m.robotAgents.Count == 0 && c.agentCount > 0)
-            m.autoSpawnCount = c.agentCount;
+        m.ConfigureAgentCountFromExperiment(c.agentCount);
     }
 
     static void ApplyPheromone(WarehousePheromone p, WarehouseExperimentConfig c)

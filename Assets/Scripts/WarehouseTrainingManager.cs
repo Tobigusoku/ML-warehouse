@@ -140,7 +140,11 @@ public class WarehouseTrainingManager : MonoBehaviour
         if (WarehouseExperimentRuntime.Failed) return;
         EnsureInitialized();
 
-        if (autoSpawnCount > 0 && robotAgents.Count == 0)
+        if (configuredAgentCount > 0)
+        {
+            ReconcileConfiguredAgentCount();
+        }
+        else if (autoSpawnCount > 0 && robotAgents.Count == 0)
         {
             for (int i = 0; i < autoSpawnCount; i++)
                 SpawnRobot(i);
@@ -173,6 +177,65 @@ public class WarehouseTrainingManager : MonoBehaviour
             Debug.Log($"[TrainingManager] 初期化完了 — " +
                       $"入口:{entrances.Count}, 棚:{allShelves.Count}, " +
                       $"スロット:{allSlots.Count}, ロボット:{robotAgents.Count}");
+    }
+
+    /// <summary>
+    /// Applies the experiment-config count without changing the saved Scene or Prefab.
+    /// Extra placed agents are disabled for this play session; missing agents are spawned in LateInit.
+    /// </summary>
+    public void ConfigureAgentCountFromExperiment(int desiredCount)
+    {
+        configuredAgentCount = desiredCount;
+        if (desiredCount <= 0) return;
+
+        for (int i = robotAgents.Count - 1; i >= desiredCount; i--)
+        {
+            WarehouseRobotAgent extra = robotAgents[i];
+            robotAgents.RemoveAt(i);
+            ForgetAgent(extra);
+            if (extra != null)
+                extra.gameObject.SetActive(false);
+        }
+    }
+
+    void ReconcileConfiguredAgentCount()
+    {
+        int before = robotAgents.Count;
+        ConfigureAgentCountFromExperiment(configuredAgentCount);
+
+        int nextIndex = robotAgents.Count;
+        while (robotAgents.Count < configuredAgentCount)
+        {
+            while (envRoot != null && envRoot.Find($"WarehouseRobot_{nextIndex}") != null)
+                nextIndex++;
+            SpawnRobot(nextIndex++);
+        }
+
+        if (before != robotAgents.Count)
+            Debug.Log($"[ExperimentConfig] Agent count adjusted at runtime: {before} -> {robotAgents.Count}.");
+    }
+
+    void ForgetAgent(WarehouseRobotAgent agent)
+    {
+        if (agent == null || !agentStates.TryGetValue(agent, out AgentState state)) return;
+
+        ReleaseSlot(state);
+        if (state.targetShelf != null)
+        {
+            state.targetShelf.Unhighlight();
+            assignedShelves.Remove(state.targetShelf);
+        }
+        DestroyRuntimeObject(state.shelfMarker);
+        DestroyRuntimeObject(state.exitMarker);
+        agentStates.Remove(agent);
+        agent.targetShelfTransform = null;
+    }
+
+    static void DestroyRuntimeObject(GameObject target)
+    {
+        if (target == null) return;
+        if (Application.isPlaying) UnityEngine.Object.Destroy(target);
+        else UnityEngine.Object.DestroyImmediate(target);
     }
 
     void EnsureAgentRegistered(WarehouseRobotAgent agent)
@@ -699,12 +762,16 @@ public class WarehouseTrainingManager : MonoBehaviour
     // ==========================================
     WarehouseRobotAgent SpawnRobot(int index)
     {
+        Vector3 spawnSize = robotSize;
+        if (robotAgents.Count > 0 && robotAgents[0] != null)
+            spawnSize = robotAgents[0].transform.localScale;
+
         var robotGo  = GameObject.CreatePrimitive(PrimitiveType.Cube);
         // Set references and config before Agent.OnEnable initializes physics and sensors.
         robotGo.SetActive(false);
         robotGo.transform.SetParent(envRoot, true);
         robotGo.name = $"WarehouseRobot_{index}";
-        robotGo.transform.localScale = robotSize;
+        robotGo.transform.localScale = spawnSize;
 
         if (entrances.Count > 0)
             robotGo.transform.position = entrances[index % entrances.Count].center;
