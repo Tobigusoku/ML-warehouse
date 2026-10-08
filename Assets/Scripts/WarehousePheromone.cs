@@ -5,17 +5,9 @@ using System.Collections.Generic;
 /// 倉庫ロボット用フェロモンシステム (入口 × 棚 × 出口 レイヤー)
 ///
 /// ■ 概要:
-///   タスクフローの2フェーズを独立したフェロモンマップで管理する。
-///
-///   ・DELIVERING (入口→棚) :
-///       pheroDelivering[eIdx * shelfCount + sIdx][cellIdx]
-///       「入口 eIdx から出発して棚 sIdx を目指すルート」を強化
-///
-///   ・RETURNING (棚→出口) :
-///       pheroReturning[sIdx * exitCount + eIdx][cellIdx]
-///       「棚 sIdx から出口 eIdx へ戻るルート」を強化
-///
-///   ※入口と出口は同じドアを使うため exitCount == entranceCount
+///   入口 × 棚 × 出口の完全タスクごとに1枚のマップを持ち、
+///   DELIVERING と RETURNING は同じ完全タスクマップへ分泌する。
+///   可視化では完全タスク1枚のほか、入口→棚、棚→出口単位の合算も選べる。
 ///
 /// ■ データ構造:
 ///   Dictionary を廃止し、フラット float[][] + インデックス計算に変更。
@@ -142,8 +134,14 @@ public class WarehousePheromone : MonoBehaviour
     private Renderer[] vizTiles;      // [ci * gridD + cj] — 1Dフラット
     private Material vizMaterial;
     private MaterialPropertyBlock vizPropBlock;
+    private float[] vizDisplayMap;
     private int vizFrameCount = 0;
     private static readonly int ColorID = Shader.PropertyToID("_Color");
+    private bool visualizeExactRoute = false;
+    private int visualizeRouteEntrance = -1;
+    private int visualizeRouteShelf = -1;
+    private int visualizeRouteExit = -1;
+    private float[] statsScratch;
 
     // ==========================================
     //  初期化
@@ -315,13 +313,9 @@ public class WarehousePheromone : MonoBehaviour
 
     /// <summary>
     /// エージェントの現在位置にフェロモンを分泌し、報酬を返す。
+    /// 両フェーズとも entranceIdx × shelfIdx × exitIdx の完全タスクマップへ記録する。
     ///
-    /// <para>DELIVERING フェーズ: pheroDelivering[eIdx * shelfCount + sIdx] に記録</para>
-    /// <para>RETURNING  フェーズ: pheroReturning [sIdx * exitCount  + xIdx] に記録</para>
-    ///
-    /// 呼び出し条件:
-    ///   isDelivering=true  → entranceIdx と shelfIdx が有効 (>= 0)
-    ///   isDelivering=false → shelfIdx と exitIdx が有効 (>= 0)
+    /// 呼び出し条件: entranceIdx、shelfIdx、exitIdx がすべて有効 (>= 0)
     /// </summary>
     /// <param name="worldPos">エージェントのワールド座標</param>
     /// <param name="isDelivering">true=DELIVERINGフェーズ / false=RETURNINGフェーズ</param>
@@ -512,9 +506,29 @@ public class WarehousePheromone : MonoBehaviour
         return CalcAggregateRouteStats(-1, sIdx, xIdx);
     }
 
+    /// <summary>
+    /// 完全タスクマップ [entrance × shelf × exit] 1枚の統計を返す。
+    /// </summary>
+    public (float total, float max, int activeCells) GetRouteMapStats(
+        int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        if (!initialized || shelfCount == 0 ||
+            entranceIdx < 0 || entranceIdx >= entranceCount ||
+            shelfIdx < 0 || shelfIdx >= shelfCount ||
+            exitIdx < 0 || exitIdx >= exitCount)
+        {
+            return (0f, 0f, 0);
+        }
+
+        return CalcMapStats(pheroRoutes[RouteKey(entranceIdx, shelfIdx, exitIdx)]);
+    }
+
     (float total, float max, int activeCells) CalcAggregateRouteStats(int eFilter, int sFilter, int xFilter)
     {
-        float[] aggregate = new float[cellCount];
+        if (statsScratch == null || statsScratch.Length != cellCount)
+            statsScratch = new float[cellCount];
+        else
+            System.Array.Clear(statsScratch, 0, statsScratch.Length);
 
         for (int e = 0; e < entranceCount; e++)
         {
@@ -527,12 +541,12 @@ public class WarehousePheromone : MonoBehaviour
                     if (xFilter >= 0 && x != xFilter) continue;
                     float[] src = pheroRoutes[RouteKey(e, s, x)];
                     for (int i = 0; i < cellCount; i++)
-                        aggregate[i] += src[i];
+                        statsScratch[i] += src[i];
                 }
             }
         }
 
-        return CalcMapStats(aggregate);
+        return CalcMapStats(statsScratch);
     }
 
     public PheromoneUsageStats GetUsageStats(float activeThreshold = 0.001f)
@@ -661,9 +675,19 @@ public class WarehousePheromone : MonoBehaviour
     /// </summary>
     public void SetVizTarget(bool isDelivering, int eOrXIdx, ShelfUnit shelf)
     {
+        visualizeExactRoute = false;
         visualizeDelivering = isDelivering;
         visualizeEntranceIndex = eOrXIdx;
         visualizeShelf = shelf;
+    }
+
+    /// <summary>完全タスクマップ1枚をランタイム可視化の対象にする。</summary>
+    public void SetVizRoute(int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        visualizeExactRoute = true;
+        visualizeRouteEntrance = entranceIdx;
+        visualizeRouteShelf = shelfIdx;
+        visualizeRouteExit = exitIdx;
     }
 
     static float MaxOfMap(float[] map)
@@ -719,7 +743,7 @@ public class WarehousePheromone : MonoBehaviour
                 Destroy(quad.GetComponent<Collider>());
 
                 var rend = quad.GetComponent<Renderer>();
-                rend.material = vizMaterial;
+                rend.sharedMaterial = vizMaterial;
                 rend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 rend.receiveShadows = false;
 
@@ -731,7 +755,9 @@ public class WarehousePheromone : MonoBehaviour
     void DestroyVisualizationTiles()
     {
         if (vizParent != null) { Destroy(vizParent); vizParent = null; }
+        if (vizMaterial != null) { Destroy(vizMaterial); vizMaterial = null; }
         vizTiles = null;
+        vizDisplayMap = null;
     }
 
     // ==========================================
@@ -749,14 +775,17 @@ public class WarehousePheromone : MonoBehaviour
 
     void UpdateVisualization()
     {
-        // 表示用の合算バッファ (スタック上の仮配列を避け、毎回 new せず使い回す)
-        float[] displayMap = new float[cellCount];
+        if (vizDisplayMap == null || vizDisplayMap.Length != cellCount)
+            vizDisplayMap = new float[cellCount];
+        else
+            System.Array.Clear(vizDisplayMap, 0, vizDisplayMap.Length);
+
         float maxVal = 0f;
 
         if (visualizeDelivering)
-            AggregateForViz(true, displayMap, ref maxVal);
+            AggregateForViz(true, vizDisplayMap, ref maxVal);
         else
-            AggregateForViz(false, displayMap, ref maxVal);
+            AggregateForViz(false, vizDisplayMap, ref maxVal);
 
         // タイルの色を更新
         for (int i = 0; i < cellCount; i++)
@@ -764,7 +793,7 @@ public class WarehousePheromone : MonoBehaviour
             Renderer rend = vizTiles[i];
             if (rend == null) continue;
 
-            float val = displayMap[i];
+            float val = vizDisplayMap[i];
             if (val <= 0.001f)
             {
                 vizPropBlock.SetColor(ColorID, Color.clear);
@@ -785,6 +814,23 @@ public class WarehousePheromone : MonoBehaviour
     void AggregateForViz(bool isDelivering, float[] displayMap, ref float maxVal)
     {
         if (pheroRoutes == null || shelfCount == 0) return;
+
+        if (visualizeExactRoute)
+        {
+            if (visualizeRouteEntrance < 0 || visualizeRouteEntrance >= entranceCount ||
+                visualizeRouteShelf < 0 || visualizeRouteShelf >= shelfCount ||
+                visualizeRouteExit < 0 || visualizeRouteExit >= exitCount)
+                return;
+
+            float[] route = pheroRoutes[RouteKey(
+                visualizeRouteEntrance, visualizeRouteShelf, visualizeRouteExit)];
+            for (int i = 0; i < cellCount; i++)
+            {
+                displayMap[i] = route[i];
+                if (route[i] > maxVal) maxVal = route[i];
+            }
+            return;
+        }
 
         int visualSIdx = (visualizeShelf != null)
             ? GetShelfIndex(visualizeShelf) : -1;
@@ -888,14 +934,18 @@ public class WarehousePheromone : MonoBehaviour
         }
 
         // ラベル
-        string phase  = visualizeDelivering ? "Delivering" : "Returning";
+        string phase = visualizeExactRoute
+            ? $"Route E{visualizeRouteEntrance}-S{visualizeRouteShelf}-X{visualizeRouteExit}"
+            : (visualizeDelivering ? "Delivering aggregate" : "Returning aggregate");
         string eLabel = visualizeEntranceIndex < 0 ? "All" : visualizeEntranceIndex.ToString();
         string sLabel = visualizeShelf != null ? visualizeShelf.shelfID : "All";
         Vector3 labelPos = genTransform.TransformPoint(
             new Vector3(warehouseW * 0.5f, 3f, warehouseD * 0.5f));
         UnityEditor.Handles.color = Color.yellow;
-        UnityEditor.Handles.Label(labelPos,
-            $"Pheromone [{phase}] Entrance:{eLabel} Shelf:{sLabel} (max={maxVal:F1})");
+        string label = visualizeExactRoute
+            ? $"Pheromone [{phase}] (max={maxVal:F1})"
+            : $"Pheromone [{phase}] Gate:{eLabel} Shelf:{sLabel} (max={maxVal:F1})";
+        UnityEditor.Handles.Label(labelPos, label);
 #endif
     }
 }

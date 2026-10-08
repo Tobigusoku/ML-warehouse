@@ -170,7 +170,8 @@ public static class WarehouseStartupChecks
                 var initialCrate = Child(shelfObject, "Crate");
                 var shelf = shelfObject.AddComponent<ShelfUnit>();
                 shelf.CaptureInitialState();
-                shelf.AddCrate(0, 10f);
+                Child(shelfObject, "Crate");
+                InvokeInstance(shelf, "ScanExistingCrates");
                 Require(shelf.GetCrateCount() == 2, "Task completion adds a transient crate");
                 shelf.Highlight();
                 shelf.ResetForEvaluationTrial();
@@ -187,12 +188,103 @@ public static class WarehouseStartupChecks
                 var agent = agentObject.AddComponent<WarehouseRobotAgent>();
                 agent.completedCount = 4;
                 agent.crashToWall = 3;
+                agent.crashToShelf = 5;
                 agent.crashToAgent = 2;
                 agent.totalMoveDistance = 99f;
                 agent.ResetEvaluationMetrics();
                 Require(agent.completedCount == 0 && agent.crashToWall == 0 &&
-                    agent.crashToAgent == 0 && Mathf.Approximately(agent.totalMoveDistance, 0f),
+                    agent.crashToShelf == 0 && agent.crashToAgent == 0 &&
+                    Mathf.Approximately(agent.totalMoveDistance, 0f),
                     "Trial metrics reset together");
+            }, ref passed);
+
+            Check(() =>
+            {
+                var agentObject = new GameObject("ShelfCollisionAgent");
+                var targetObject = new GameObject("TargetShelf");
+                var otherObject = new GameObject("OtherShelf");
+                objects.Add(agentObject);
+                objects.Add(targetObject);
+                objects.Add(otherObject);
+                var agent = agentObject.AddComponent<WarehouseRobotAgent>();
+                var target = targetObject.AddComponent<ShelfUnit>();
+                var other = otherObject.AddComponent<ShelfUnit>();
+                agent.targetShelfTransform = target.transform;
+
+                Require(!(bool)InvokeInstance(agent, "ShouldCountShelfCollision", target),
+                    "Delivering contact with the target shelf is excluded");
+                Require((bool)InvokeInstance(agent, "ShouldCountShelfCollision", other),
+                    "Delivering contact with another shelf is counted");
+
+                typeof(WarehouseRobotAgent)
+                    .GetField("currentPhase", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .SetValue(agent, WarehouseRobotAgent.Phase.Returning);
+                Require((bool)InvokeInstance(agent, "ShouldCountShelfCollision", target),
+                    "Returning contact with the former target shelf is counted");
+
+                Require((bool)InvokeInstance(agent, "RegisterShelfContact", other),
+                    "First contact with a shelf is countable");
+                Require(!(bool)InvokeInstance(agent, "RegisterShelfContact", other),
+                    "Continuous contact with the same shelf is deduplicated");
+                InvokeInstance(agent, "UnregisterShelfContact", other);
+                InvokeInstance(agent, "UnregisterShelfContact", other);
+                Require((bool)InvokeInstance(agent, "RegisterShelfContact", other),
+                    "A new contact after exit is countable");
+            }, ref passed);
+
+            Check(() =>
+            {
+                Vector3 center = Vector3.zero;
+                Vector3 direction = Vector3.right;
+                const float halfWidth = 5f;
+
+                Vector3 pointInside = (Vector3)InvokeManagerStatic(
+                    "ClosestPointOnSegment", center, direction, halfWidth, new Vector3(2f, 0f, 3f));
+                Vector3 pointPastEnd = (Vector3)InvokeManagerStatic(
+                    "ClosestPointOnSegment", center, direction, halfWidth, new Vector3(8f, 0f, 3f));
+                Vector3 pointPastStart = (Vector3)InvokeManagerStatic(
+                    "ClosestPointOnSegment", center, direction, halfWidth, new Vector3(-8f, 0f, 3f));
+
+                Require(Vector3.Distance(pointInside, new Vector3(2f, 0f, 0f)) < 0.001f,
+                    "Gate goal uses the perpendicular closest point inside the segment");
+                Require(Vector3.Distance(pointPastEnd, new Vector3(5f, 0f, 0f)) < 0.001f &&
+                        Vector3.Distance(pointPastStart, new Vector3(-5f, 0f, 0f)) < 0.001f,
+                    "Gate goal clamps the closest point to both segment ends");
+            }, ref passed);
+
+            Check(() =>
+            {
+                var firstObject = new GameObject("FirstHud");
+                var secondObject = new GameObject("SecondHud");
+                var pheromoneObject = new GameObject("PheromoneVizSelection");
+                objects.Add(firstObject);
+                objects.Add(secondObject);
+                objects.Add(pheromoneObject);
+
+                var ownerField = typeof(WarehousePheromoneDebugger)
+                    .GetField("activeHudOwner", BindingFlags.Static | BindingFlags.NonPublic);
+                ownerField.SetValue(null, null);
+
+                var firstHud = firstObject.AddComponent<WarehousePheromoneDebugger>();
+                var secondHud = secondObject.AddComponent<WarehousePheromoneDebugger>();
+                Require((bool)InvokeInstance(firstHud, "IsPrimaryHud"),
+                    "The first active pheromone HUD becomes the single screen owner");
+                Require(!(bool)InvokeInstance(secondHud, "IsPrimaryHud"),
+                    "Additional agent HUDs do not draw over the owner");
+
+                var phero = pheromoneObject.AddComponent<WarehousePheromone>();
+                phero.SetVizRoute(1, 2, 3);
+                Require((bool)typeof(WarehousePheromone)
+                        .GetField("visualizeExactRoute", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .GetValue(phero),
+                    "Complete-route selection enables exact-layer visualization");
+                phero.SetVizTarget(true, 1, null);
+                Require(!(bool)typeof(WarehousePheromone)
+                        .GetField("visualizeExactRoute", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .GetValue(phero),
+                    "Aggregate selection exits exact-layer visualization");
+
+                ownerField.SetValue(null, null);
             }, ref passed);
 
             Debug.Log($"[WarehouseStartupChecks] PASS: {passed} checks.");
@@ -282,6 +374,20 @@ public static class WarehouseStartupChecks
         {
             return target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
                 .Invoke(target, args);
+        }
+        catch (TargetInvocationException error)
+        {
+            throw error.InnerException ?? error;
+        }
+    }
+
+    static object InvokeManagerStatic(string name, params object[] args)
+    {
+        try
+        {
+            return typeof(WarehouseTrainingManager)
+                .GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, args);
         }
         catch (TargetInvocationException error)
         {

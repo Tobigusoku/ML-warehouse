@@ -10,25 +10,35 @@ using System.Collections.Generic;
 ///
 /// ■ キー操作:
 ///   [P]         HUD 表示/非表示
-///   [Tab]       フェーズ切り替え (Delivering ↔ Returning)
+///   [Tab]       表示単位切り替え (完全タスク / 入口→棚 / 棚→出口)
 ///   [↑][↓]      ランキング内のマップ選択を上下移動
 ///   [L]         現在の統計を Debug.Log に全出力
 ///   [C]         全フェロモンをリセット (確認あり)
 ///
 /// ■ 表示内容:
 ///   ・Global Stats   : 総合フェロモン量・非ゼロセル数・マップ数
-///   ・Top Maps       : フェロモン合計が多い順上位 N 本のマップ一覧
-///                      (バーグラフ + 入口/棚/出口ラベル)
+///   ・Top Layers     : フェロモン合計が多い順上位 N 本のレイヤー一覧
+///                      完全タスクと2種類のサブタスク合算を切り替え可能
 ///   ・Agent Values   : 各エージェントの現在セルのフェロモン値
 ///                      (アクティブなマップ上の値)
 ///   ・Selected Map   : 選択中マップの詳細 (合計/最大/非ゼロセル数)
 ///
 /// ■ セットアップ:
-///   WarehouseTrainingManager と同じ GameObject にアタッチする。
+///   ManagerまたはAgentにアタッチできる。複数Agentに付いていても、
+///   ランタイムでは代表インスタンス1つだけがHUDを描画する。
 ///   WarehousePheromone・WarehouseTrainingManager は自動検出される。
 /// </summary>
 public class WarehousePheromoneDebugger : MonoBehaviour
 {
+    private static WarehousePheromoneDebugger activeHudOwner;
+
+    private enum MapViewMode
+    {
+        CompleteRoutes,
+        EntranceToShelf,
+        ShelfToExit
+    }
+
     // ==========================================
     //  Inspector 設定
     // ==========================================
@@ -64,10 +74,10 @@ public class WarehousePheromoneDebugger : MonoBehaviour
     // ==========================================
     private struct MapEntry
     {
-        public bool  isDelivering;
-        public int   eIdx;      // 入口インデックス (Delivering) または -1 (Returning)
+        public bool  isCompleteRoute;
+        public int   eIdx;
         public int   sIdx;      // 棚インデックス
-        public int   xIdx;      // 出口インデックス (Returning) または -1 (Delivering)
+        public int   xIdx;
         public float total;
         public float max;
         public int   activeCells;
@@ -77,13 +87,15 @@ public class WarehousePheromoneDebugger : MonoBehaviour
     private List<MapEntry>  topMaps      = new List<MapEntry>();
     private float           globalTotal  = 0f;
     private int             globalActive = 0;
+    private int             activeMapCount = 0;
     private int             totalMapCount = 0;
     private int             frameCounter = 0;
 
     // UI 状態
-    private bool  viewDelivering = true;   // true=Delivering / false=Returning
+    private MapViewMode viewMode = MapViewMode.CompleteRoutes;
     private int   selectedIndex  = 0;      // topMaps 内のカーソル位置
     private bool  resetConfirm   = false;  // C キー2回押し確認
+    private Vector2 scrollPosition;
 
     // ==========================================
     //  GUIスタイルキャッシュ
@@ -94,13 +106,11 @@ public class WarehousePheromoneDebugger : MonoBehaviour
     private GUIStyle boxStyle;
     private GUIStyle sectionStyle;
     private GUIStyle footerStyle;
-    private GUIStyle selectedStyle;  // 選択行のハイライト
     private GUIStyle barLabelStyle;
     private GUIStyle barValueStyle;
+    private GUIStyle tabStyle;
     private Texture2D bgTex;
-    private Texture2D barBgTex;
     private Texture2D whiteTex;
-    private Texture2D selectedBgTex;
     private bool stylesInitialized = false;
 
     private float lineH;
@@ -111,11 +121,7 @@ public class WarehousePheromoneDebugger : MonoBehaviour
     // ==========================================
     void Start()
     {
-        phero   = GetComponent<WarehousePheromone>();
-        manager = GetComponent<WarehouseTrainingManager>();
-
-        if (phero == null)   phero   = FindObjectOfType<WarehousePheromone>();
-        if (manager == null) manager = FindObjectOfType<WarehouseTrainingManager>();
+        ResolveReferences();
 
         if (phero == null)
         {
@@ -124,11 +130,42 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         }
     }
 
+    void ResolveReferences()
+    {
+        var hostAgent = GetComponent<WarehouseRobotAgent>();
+        if (hostAgent != null)
+        {
+            manager = hostAgent.trainingManager;
+            phero = hostAgent.pheromone;
+        }
+
+        if (manager == null) manager = GetComponent<WarehouseTrainingManager>();
+        if (phero == null) phero = GetComponent<WarehousePheromone>();
+        if (phero == null && manager != null) phero = manager.GetComponent<WarehousePheromone>();
+
+        if (phero == null)   phero   = FindObjectOfType<WarehousePheromone>();
+        if (manager == null) manager = FindObjectOfType<WarehouseTrainingManager>();
+    }
+
+    bool IsPrimaryHud()
+    {
+        if (activeHudOwner == null || !activeHudOwner.isActiveAndEnabled)
+            activeHudOwner = this;
+        return activeHudOwner == this;
+    }
+
+    bool CanRunHud()
+    {
+        return WarehousePerformance.IsEnabled(p => p.HUD) && IsPrimaryHud();
+    }
+
     // ==========================================
     //  毎フレーム: 統計更新 & キー入力
     // ==========================================
     void Update()
     {
+        if (!CanRunHud()) return;
+
         HandleInput();
 
         frameCounter++;
@@ -147,12 +184,10 @@ public class WarehousePheromoneDebugger : MonoBehaviour
 
         if (!showHUD) return;
 
-        // [Tab] フェーズ切り替え
+        // [Tab] 表示単位切り替え
         if (Input.GetKeyDown(KeyCode.Tab))
         {
-            viewDelivering = !viewDelivering;
-            selectedIndex  = 0;
-            ApplyVizTarget();
+            SetViewMode((MapViewMode)(((int)viewMode + 1) % 3));
         }
 
         // [↑][↓] マップ選択移動
@@ -206,15 +241,47 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         int eCount = phero.EntranceCount;
         int sCount = phero.ShelfCount;
         int xCount = phero.ExitCount;
+        bool hadSelection = selectedIndex >= 0 && selectedIndex < topMaps.Count;
+        MapEntry previousSelection = hadSelection ? topMaps[selectedIndex] : default;
 
-        // スキャン対象: 現在のフェーズに対応するマップのみ
-        // （全マップをスキャンするとHugeプリセットで負荷大になるため）
+        // 現在選択している表示単位だけを集計する。
         topMaps.Clear();
         globalTotal  = 0f;
         globalActive = 0;
+        activeMapCount = 0;
         totalMapCount = 0;
 
-        if (viewDelivering)
+        if (viewMode == MapViewMode.CompleteRoutes)
+        {
+            totalMapCount = eCount * sCount * xCount;
+
+            for (int e = 0; e < eCount; e++)
+            {
+                for (int s = 0; s < sCount; s++)
+                {
+                    ShelfUnit shelf = phero.GetShelfByIndex(s);
+                    string shelfLabel = shelf != null ? shelf.shelfID : $"S{s}";
+
+                    for (int x = 0; x < xCount; x++)
+                    {
+                        var (total, max, active) = phero.GetRouteMapStats(e, s, x);
+                        if (total <= 0f) continue;
+
+                        globalTotal += total;
+                        globalActive += active;
+                        activeMapCount++;
+                        topMaps.Add(new MapEntry
+                        {
+                            isCompleteRoute = true,
+                            eIdx = e, sIdx = s, xIdx = x,
+                            total = total, max = max, activeCells = active,
+                            label = $"E{e} → {shelfLabel} → X{x}"
+                        });
+                    }
+                }
+            }
+        }
+        else if (viewMode == MapViewMode.EntranceToShelf)
         {
             // Delivering: [eIdx × sCount + sIdx]
             totalMapCount = eCount * sCount;
@@ -228,13 +295,14 @@ public class WarehousePheromoneDebugger : MonoBehaviour
 
                     globalTotal  += total;
                     globalActive += active;
+                    activeMapCount++;
 
                     ShelfUnit shelf = phero.GetShelfByIndex(s);
                     string shelfLabel = shelf != null ? shelf.shelfID : $"S{s}";
 
                     topMaps.Add(new MapEntry
                     {
-                        isDelivering = true,
+                        isCompleteRoute = false,
                         eIdx = e, sIdx = s, xIdx = -1,
                         total = total, max = max, activeCells = active,
                         label = $"E{e} → {shelfLabel}"
@@ -256,13 +324,14 @@ public class WarehousePheromoneDebugger : MonoBehaviour
 
                     globalTotal  += total;
                     globalActive += active;
+                    activeMapCount++;
 
                     ShelfUnit shelf = phero.GetShelfByIndex(s);
                     string shelfLabel = shelf != null ? shelf.shelfID : $"S{s}";
 
                     topMaps.Add(new MapEntry
                     {
-                        isDelivering = false,
+                        isCompleteRoute = false,
                         eIdx = -1, sIdx = s, xIdx = x,
                         total = total, max = max, activeCells = active,
                         label = $"{shelfLabel} → X{x}"
@@ -271,28 +340,40 @@ public class WarehousePheromoneDebugger : MonoBehaviour
             }
         }
 
-        // 合計フェロモン降順でソート (InsertionSort — リストは小さいので十分)
-        for (int i = 1; i < topMaps.Count; i++)
-        {
-            MapEntry key = topMaps[i];
-            int j = i - 1;
-            while (j >= 0 && topMaps[j].total < key.total)
-            {
-                topMaps[j + 1] = topMaps[j];
-                j--;
-            }
-            topMaps[j + 1] = key;
-        }
+        topMaps.Sort(CompareMapTotals);
 
         // 上位 topK に切り詰め
-        if (topMaps.Count > topK)
-            topMaps.RemoveRange(topK, topMaps.Count - topK);
+        int limit = Mathf.Max(1, topK);
+        if (topMaps.Count > limit)
+            topMaps.RemoveRange(limit, topMaps.Count - limit);
 
-        // カーソルが範囲外になった場合は補正
         if (topMaps.Count > 0)
-            selectedIndex = Mathf.Clamp(selectedIndex, 0, topMaps.Count - 1);
+        {
+            selectedIndex = 0;
+            if (hadSelection)
+            {
+                for (int i = 0; i < topMaps.Count; i++)
+                {
+                    if (!SameLayer(topMaps[i], previousSelection)) continue;
+                    selectedIndex = i;
+                    break;
+                }
+            }
+            ApplyVizTarget();
+        }
         else
             selectedIndex = 0;
+    }
+
+    static bool SameLayer(MapEntry a, MapEntry b)
+    {
+        return a.isCompleteRoute == b.isCompleteRoute &&
+               a.eIdx == b.eIdx && a.sIdx == b.sIdx && a.xIdx == b.xIdx;
+    }
+
+    static int CompareMapTotals(MapEntry a, MapEntry b)
+    {
+        return b.total.CompareTo(a.total);
     }
 
     /// <summary>
@@ -303,10 +384,34 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         if (phero == null || topMaps.Count == 0) return;
 
         var entry = topMaps[selectedIndex];
-        ShelfUnit shelf = entry.sIdx >= 0 ? phero.GetShelfByIndex(entry.sIdx) : null;
+        if (entry.isCompleteRoute)
+        {
+            phero.SetVizRoute(entry.eIdx, entry.sIdx, entry.xIdx);
+            return;
+        }
 
-        int eOrX = entry.isDelivering ? entry.eIdx : entry.xIdx;
-        phero.SetVizTarget(entry.isDelivering, eOrX, shelf);
+        ShelfUnit shelf = entry.sIdx >= 0 ? phero.GetShelfByIndex(entry.sIdx) : null;
+        bool entranceToShelf = viewMode == MapViewMode.EntranceToShelf;
+        int eOrX = entranceToShelf ? entry.eIdx : entry.xIdx;
+        phero.SetVizTarget(entranceToShelf, eOrX, shelf);
+    }
+
+    void SetViewMode(MapViewMode mode)
+    {
+        if (viewMode == mode) return;
+        viewMode = mode;
+        selectedIndex = 0;
+        RefreshStats();
+    }
+
+    string GetViewModeLabel()
+    {
+        switch (viewMode)
+        {
+            case MapViewMode.EntranceToShelf: return "E→S aggregate";
+            case MapViewMode.ShelfToExit: return "S→X aggregate";
+            default: return "E×S×X routes";
+        }
     }
 
     // ==========================================
@@ -325,7 +430,7 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         sb.AppendLine("[PheromoneDebugger] FULL DUMP");
         sb.AppendLine($"  Entrance:{phero.EntranceCount} Shelf:{phero.ShelfCount} Exit:{phero.ExitCount}");
         sb.AppendLine($"  Global Total={globalTotal:F2}  Active Cells={globalActive}");
-        sb.AppendLine($"  View Phase: {(viewDelivering ? "Delivering" : "Returning")}");
+        sb.AppendLine($"  View: {GetViewModeLabel()}");
         sb.AppendLine("--- Top Maps ---");
 
         for (int i = 0; i < topMaps.Count; i++)
@@ -363,47 +468,59 @@ public class WarehousePheromoneDebugger : MonoBehaviour
     // ==========================================
     void OnGUI()
     {
-        if (!showHUD) return;
+        if (!showHUD || !CanRunHud()) return;
 
         InitStyles();
 
         float sw = Screen.width;
-        float x  = sw - hudRight - hudWidth;
-        float y  = hudTop;
-        float w  = hudWidth;
+        float sh = Screen.height;
+        float margin = 6f;
+        float availableW = Mathf.Max(120f, sw - margin * 2f);
+        float w = Mathf.Min(Mathf.Max(280f, hudWidth), availableW);
+        float x = Mathf.Max(margin, sw - Mathf.Max(margin, hudRight) - w);
+        float y = Mathf.Clamp(hudTop, margin, Mathf.Max(margin, sh - 120f));
 
         // --- 高さ計算 ---
         int agentCount = (manager != null) ? CountValidAgents() : 0;
-        int mapRows    = Mathf.Min(topMaps.Count, topK);
+        int mapRows = Mathf.Min(topMaps.Count, Mathf.Max(0, topK));
 
-        float totalH = 4f + lineH           // ヘッダー
-                     + lineH               // フェーズタブ
-                     + lineH * 0.5f        // 区切り
-                     + lineH              // Global Stats ヘッダー
-                     + lineH * 3          // Global 3行
-                     + lineH * 0.5f        // 区切り
-                     + lineH              // Top Maps ヘッダー
-                     + barH * mapRows     // マップバー
-                     + lineH * 0.5f;       // 区切り
+        float contentH = lineH             // ヘッダー
+                       + lineH             // 表示モードタブ
+                       + lineH * 0.5f      // 区切り
+                       + lineH * 4f        // Global Stats 見出し + 3行
+                       + lineH * 0.5f      // 区切り
+                       + lineH             // Top Layers 見出し
+                       + (mapRows > 0 ? barH * mapRows : lineH)
+                       + lineH * 0.5f;     // 区切り
 
         if (topMaps.Count > 0)
-            totalH += lineH * 3;           // Selected Map 詳細
+            contentH += lineH * 4f;        // Selected Layer 見出し + 3行
 
         if (agentCount > 0)
         {
-            totalH += lineH * 0.5f;        // 区切り
-            totalH += lineH;               // Agents ヘッダー
-            totalH += lineH * agentCount;  // エージェント行
+            contentH += lineH * 0.5f;      // 区切り
+            contentH += lineH;             // Agents ヘッダー
+            contentH += lineH * agentCount;
         }
 
-        totalH += lineH;                   // フッター
+        contentH += lineH * 2f + 4f;       // フッター2行
+
+        float maxPanelH = Mathf.Max(80f, sh - y - margin);
+        float panelH = Mathf.Min(contentH + 12f, maxPanelH);
+        bool needsScroll = contentH + 12f > panelH;
 
         // 背景ボックス
-        GUI.Box(new Rect(x, y, w, totalH), "", boxStyle);
+        GUI.Box(new Rect(x, y, w, panelH), "", boxStyle);
 
-        float cx = x + 10f;
-        float cw = w - 20f;
-        float cy = y + 6f;
+        Rect viewport = new Rect(x + 6f, y + 6f, w - 12f, panelH - 12f);
+        float contentW = viewport.width - (needsScroll ? 18f : 0f);
+        scrollPosition = GUI.BeginScrollView(
+            viewport, scrollPosition, new Rect(0f, 0f, contentW, contentH),
+            false, needsScroll);
+
+        float cx = 4f;
+        float cw = contentW - 8f;
+        float cy = 0f;
 
         // ==========================================
         //  ヘッダー
@@ -412,18 +529,21 @@ public class WarehousePheromoneDebugger : MonoBehaviour
             "PHEROMONE DEBUGGER", headerStyle);
         cy += lineH;
 
-        // フェーズタブ (クリックでも切り替え)
-        string delLabel = viewDelivering
-            ? "<color=#FF8844>● DELIVERING  </color><color=#555566>RETURNING</color>"
-            : "<color=#555566>  DELIVERING  </color><color=#44FFAA>● RETURNING</color>";
-        if (GUI.Button(new Rect(cx, cy, cw, lineH),
-                       viewDelivering ? "▶ Delivering (Tab)" : "▶ Returning  (Tab)",
-                       sectionStyle))
-        {
-            viewDelivering = !viewDelivering;
-            selectedIndex  = 0;
-            ApplyVizTarget();
-        }
+        // 完全タスク層と2種類の合算ビュー
+        const float tabGap = 3f;
+        float tabW = (cw - tabGap * 2f) / 3f;
+        if (GUI.Toggle(new Rect(cx, cy, tabW, lineH),
+                       viewMode == MapViewMode.CompleteRoutes, "E×S×X", tabStyle) &&
+            viewMode != MapViewMode.CompleteRoutes)
+            SetViewMode(MapViewMode.CompleteRoutes);
+        if (GUI.Toggle(new Rect(cx + tabW + tabGap, cy, tabW, lineH),
+                       viewMode == MapViewMode.EntranceToShelf, "E→S", tabStyle) &&
+            viewMode != MapViewMode.EntranceToShelf)
+            SetViewMode(MapViewMode.EntranceToShelf);
+        if (GUI.Toggle(new Rect(cx + (tabW + tabGap) * 2f, cy, tabW, lineH),
+                       viewMode == MapViewMode.ShelfToExit, "S→X", tabStyle) &&
+            viewMode != MapViewMode.ShelfToExit)
+            SetViewMode(MapViewMode.ShelfToExit);
         cy += lineH;
 
         DrawSeparator(ref cy, cx, cw);
@@ -434,16 +554,14 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         DrawSectionHeader(ref cy, cx, cw, "GLOBAL STATS");
         DrawRow(ref cy, cx, cw, "Total Pheromone", $"{globalTotal:F1}");
         DrawRow(ref cy, cx, cw, "Active Cells",    $"{globalActive}");
-        DrawRow(ref cy, cx, cw, "Active Maps",
-            $"{topMaps.Count} / {totalMapCount}");
+        DrawRow(ref cy, cx, cw, "Active Layers", $"{activeMapCount} / {totalMapCount}");
 
         DrawSeparator(ref cy, cx, cw);
 
         // ==========================================
         //  Top Maps ランキング
         // ==========================================
-        DrawSectionHeader(ref cy, cx, cw,
-            $"TOP MAPS  [↑↓ select]  (phase={( viewDelivering ? "DEL" : "RET" )})");
+        DrawSectionHeader(ref cy, cx, cw, $"TOP LAYERS  [{GetViewModeLabel()}]");
 
         float maxTotal = topMaps.Count > 0 ? topMaps[0].total : 1f;
 
@@ -472,8 +590,7 @@ public class WarehousePheromoneDebugger : MonoBehaviour
 
         if (topMaps.Count == 0)
         {
-            string noData = viewDelivering ? "フェロモンなし (DEL)" : "フェロモンなし (RET)";
-            GUI.Label(new Rect(cx, cy, cw, lineH), noData, footerStyle);
+            GUI.Label(new Rect(cx, cy, cw, lineH), "この表示単位にフェロモンなし", footerStyle);
             cy += lineH;
         }
 
@@ -485,9 +602,8 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         if (topMaps.Count > 0)
         {
             var sel = topMaps[selectedIndex];
-            DrawSectionHeader(ref cy, cx, cw, "SELECTED MAP DETAIL");
-            DrawRow(ref cy, cx, cw, "Map",
-                sel.isDelivering ? $"DEL  {sel.label}" : $"RET  {sel.label}");
+            DrawSectionHeader(ref cy, cx, cw, "SELECTED LAYER");
+            DrawFullRow(ref cy, cx, cw, sel.label);
             DrawRow(ref cy, cx, cw, "Max Value",    $"{sel.max:F4}");
             DrawRow(ref cy, cx, cw, "Active Cells", $"{sel.activeCells}");
         }
@@ -531,10 +647,13 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         //  フッター
         // ==========================================
         cy += 2f;
-        string footer = "[P]HUD  [Tab]Phase  [↑↓]Select  [L]Log" +
-                        (resetConfirm ? "  <color=#FF4444>[C]確定?</color>" : "  [C]Reset");
         footerStyle.richText = true;
-        GUI.Label(new Rect(cx, cy, cw, lineH), footer, footerStyle);
+        GUI.Label(new Rect(cx, cy, cw, lineH), "[P] Hide  [Tab] View  [↑↓] Select", footerStyle);
+        cy += lineH;
+        string resetLabel = resetConfirm ? "<color=#FF4444>[C] Confirm reset</color>" : "[C] Reset";
+        GUI.Label(new Rect(cx, cy, cw, lineH), $"[L] Log  {resetLabel}", footerStyle);
+
+        GUI.EndScrollView();
     }
 
     // ==========================================
@@ -560,6 +679,12 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         y += lineH;
     }
 
+    void DrawFullRow(ref float y, float x, float w, string value)
+    {
+        GUI.Label(new Rect(x, y, w, lineH), value, labelStyle);
+        y += lineH;
+    }
+
     void DrawSectionHeader(ref float y, float x, float w, string title)
     {
         GUI.Label(new Rect(x, y, w, lineH), title, sectionStyle);
@@ -580,9 +705,9 @@ public class WarehousePheromoneDebugger : MonoBehaviour
                     string label, float value, float min, float max,
                     Color barColor, string valueText)
     {
-        float lw = w * 0.42f;
-        float bw = w * 0.33f;
-        float vw = w * 0.25f;
+        float lw = w * 0.55f;
+        float bw = w * 0.25f;
+        float vw = w * 0.20f;
         float bx = x + lw + 2f;
 
         GUI.Label(new Rect(x, y, lw, barH), label, barLabelStyle);
@@ -627,9 +752,7 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         barH  = fontSize + 10f;
 
         bgTex          = MakeTex(1, 1, new Color(0.08f, 0.08f, 0.10f, bgAlpha));
-        barBgTex       = MakeTex(1, 1, new Color(0.18f, 0.18f, 0.22f, 1f));
         whiteTex       = MakeTex(1, 1, Color.white);
-        selectedBgTex  = MakeTex(1, 1, new Color(1f, 0.85f, 0.2f, 0.12f));
 
         boxStyle = new GUIStyle(GUI.skin.box);
         boxStyle.normal.background = bgTex;
@@ -672,7 +795,9 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         barValueStyle.alignment = TextAnchor.MiddleLeft;
         barValueStyle.fontSize  = fontSize - 1;
 
-        var btnStyle = GUI.skin.button;
+        tabStyle = new GUIStyle(GUI.skin.button);
+        tabStyle.fontSize = Mathf.Max(11, fontSize - 2);
+        tabStyle.alignment = TextAnchor.MiddleCenter;
 
         stylesInitialized = true;
     }
@@ -689,9 +814,13 @@ public class WarehousePheromoneDebugger : MonoBehaviour
 
     void OnDestroy()
     {
+        if (activeHudOwner == this) activeHudOwner = null;
         if (bgTex)         Destroy(bgTex);
-        if (barBgTex)      Destroy(barBgTex);
         if (whiteTex)      Destroy(whiteTex);
-        if (selectedBgTex) Destroy(selectedBgTex);
+    }
+
+    void OnDisable()
+    {
+        if (activeHudOwner == this) activeHudOwner = null;
     }
 }

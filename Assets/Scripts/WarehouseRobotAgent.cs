@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using Unity.MLAgents;
 using Unity.MLAgents.Actuators;
@@ -27,6 +28,9 @@ public class WarehouseRobotAgent : Agent
     private const string CompletedTaskStat = "Warehouse/Task/Completed";
     private const string TimeoutStat = "Warehouse/Episode/Timeout";
     private const string FallStat = "Warehouse/Episode/Fall";
+    private const string WallCollisionStat = "Warehouse/Collision/Wall";
+    private const string ShelfCollisionStat = "Warehouse/Collision/Shelf";
+    private const string AgentCollisionStat = "Warehouse/Collision/Agent";
 
     // ==========================================
     //  フェーズ定義
@@ -135,6 +139,8 @@ public class WarehouseRobotAgent : Agent
     [HideInInspector]
     public int crashToWall = 0;
     [HideInInspector]
+    public int crashToShelf = 0;
+    [HideInInspector]
     public int crashToAgent = 0;
 
     // ==========================================
@@ -167,7 +173,7 @@ public class WarehouseRobotAgent : Agent
     private float fieldWidth = 30f;
     private float fieldDepth = 40f;
 
-    // 帰還フェーズのターゲット出口
+    // 帰還フェーズのターゲット出口中心。Managerがない場合のフォールバックにも使う。
     private Vector3 targetExitPosition;
 
     // フェロモン: 荷物を置いた棚のインデックス (RETURNINGフェーズで使用)
@@ -177,6 +183,11 @@ public class WarehouseRobotAgent : Agent
     // シェーピング報酬: エピソード中の最短距離記録
     private float bestDistToShelf = float.MaxValue;
     private float bestDistToExit = float.MaxValue;
+
+    // A shelf can contain multiple colliders. Reference counts make one continuous
+    // contact with that shelf a single evaluation event.
+    private readonly Dictionary<ShelfUnit, int> activeShelfContacts =
+        new Dictionary<ShelfUnit, int>();
 
     // ==========================================
     //  デバッグ用 公開プロパティ (HUDから参照)
@@ -304,8 +315,8 @@ public class WarehouseRobotAgent : Agent
             // ResetEpisode が spawnEntranceIndex をセットする
         }
 
-        // 帰還ターゲット出口を初期値で設定 (荷物を置いた時にランダム再選択)
-        // ※ここではインデックスも取得し、フェロモンに備える
+        // Episode開始時に帰還対象ゲートを決める。
+        // インデックスはフェロモンのタスク識別、中心座標はフォールバックに使う。
         if (trainingManager != null)
         {
             var (pos, idx) = trainingManager.GetRandomEntranceWithIndex();
@@ -326,6 +337,7 @@ public class WarehouseRobotAgent : Agent
         isTouchingWall = false;
         isPushingIntoWall = false;
         isPushingIntoAgent = false;
+        activeShelfContacts.Clear();
         bestDistToShelf = float.MaxValue;
         bestDistToExit = float.MaxValue;
         // Episode resets teleport the robot; that teleport is not traveled distance.
@@ -337,7 +349,9 @@ public class WarehouseRobotAgent : Agent
     {
         completedCount = 0;
         crashToWall = 0;
+        crashToShelf = 0;
         crashToAgent = 0;
+        activeShelfContacts.Clear();
         totalMoveDistance = 0f;
         lastPosition = transform.position;
     }
@@ -389,7 +403,7 @@ public class WarehouseRobotAgent : Agent
             sensor.AddObservation(0f);
         }
 
-        AddPolarObservation(sensor, targetExitPosition);                    // [6] 距離, [7] 角度
+        AddPolarObservation(sensor, GetExitGoalPoint());                    // [6] 距離, [7] 角度
 
         // === B. レイキャストセンサー (12本 × 4 = 48) ===
         raySensor.CollectRayObservations(sensor);
@@ -594,8 +608,9 @@ public class WarehouseRobotAgent : Agent
             debugAngleToShelf = 0f;
         }
 
-        debugDistToExit = HorizontalDistance(transform.position, targetExitPosition);
-        debugAngleToExit = SignedAngleTo(targetExitPosition);
+        Vector3 exitGoalPoint = GetExitGoalPoint();
+        debugDistToExit = HorizontalDistance(transform.position, exitGoalPoint);
+        debugAngleToExit = SignedAngleTo(exitGoalPoint);
 
         if (raySensor != null)
             debugRayData = raySensor.CollectRayObservationsArray();
@@ -705,12 +720,13 @@ public class WarehouseRobotAgent : Agent
 
         // 出口はスポーン時に決めたものをそのまま使う。
         // これにより「入口 -> 棚 -> 出口」の完全ルートを一貫して学習できる。
+        Vector3 exitGoalPoint = GetExitGoalPoint();
         if (trainingManager != null)
-            trainingManager.OnCargoDropped(this, targetExitPosition);
+            trainingManager.OnCargoDropped(this, exitGoalPoint);
 
         if (WarehousePerformance.IsEnabled(p => p.DebugLog))
             Debug.Log($"[Robot] Auto-drop at shelf front! -> Returning to exit " +
-                      $"({targetExitPosition.x:F1}, {targetExitPosition.z:F1}) idx={targetExitIndex}");
+                      $"({exitGoalPoint.x:F1}, {exitGoalPoint.z:F1}) idx={targetExitIndex}");
     }
 
     // ==========================================
@@ -718,7 +734,7 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     void CheckExitReached()
     {
-        float dist = Vector3.Distance(transform.position, targetExitPosition);
+        float dist = DistanceToExitGoal();
 
         if (dist <= exitRange)
         {
@@ -764,7 +780,7 @@ public class WarehouseRobotAgent : Agent
         {
             if (exitApproachReward > 0f)
             {
-                float dist = HorizontalDistance(transform.position, targetExitPosition);
+                float dist = DistanceToExitGoal();
 
                 if (dist < bestDistToExit)
                 {
@@ -782,6 +798,23 @@ public class WarehouseRobotAgent : Agent
     {
         Vector3 localExit = new Vector3(-1.5f, transform.position.y - GetEnvGroundY(), fieldDepth / 2f);
         return envRoot != null ? envRoot.TransformPoint(localExit) : localExit;
+    }
+
+    Vector3 GetExitGoalPoint()
+    {
+        if (trainingManager != null &&
+            trainingManager.TryGetClosestPointOnEntranceSegment(
+                targetExitIndex, transform.position, out Vector3 closestPoint))
+        {
+            return closestPoint;
+        }
+
+        return targetExitPosition;
+    }
+
+    float DistanceToExitGoal()
+    {
+        return HorizontalDistance(transform.position, GetExitGoalPoint());
     }
 
     float GetEnvGroundY()
@@ -896,22 +929,37 @@ public class WarehouseRobotAgent : Agent
 
     void OnCollisionEnter(Collision collision)
     {
+        ShelfUnit shelf = FindShelfUnit(collision.gameObject);
+        if (shelf != null)
+        {
+            if (RegisterShelfContact(shelf) && ShouldCountShelfCollision(shelf))
+            {
+                crashToShelf++;
+                RecordEvent(ShelfCollisionStat);
+            }
+            return;
+        }
+
         string n = collision.gameObject.name;
         if (IsWallObject(n))
         {
             AddReward(penaltyWallHit);
             crashToWall++;
-            Debug.Log("wall hit");
+            RecordEvent(WallCollisionStat);
         }
         else if (IsOtherAgent(collision.gameObject))
         {
             AddReward(penaltyAgentCollision);
             crashToAgent++;
+            RecordEvent(AgentCollisionStat);
         }
     }
 
     void OnCollisionStay(Collision collision)
     {
+        if (FindShelfUnit(collision.gameObject) != null)
+            return;
+
         if (collision.contactCount == 0) return;
 
         Vector3 normal = collision.contacts[0].normal;
@@ -946,6 +994,13 @@ public class WarehouseRobotAgent : Agent
 
     void OnCollisionExit(Collision collision)
     {
+        ShelfUnit shelf = FindShelfUnit(collision.gameObject);
+        if (shelf != null)
+        {
+            UnregisterShelfContact(shelf);
+            return;
+        }
+
         string n = collision.gameObject.name;
         if (IsWallObject(n))
         {
@@ -963,6 +1018,47 @@ public class WarehouseRobotAgent : Agent
         return name.StartsWith("Wall") || name.StartsWith("Pillar") ||
                name.StartsWith("Guard") || name.StartsWith("Post") ||
                name.StartsWith("Rack");
+    }
+
+    ShelfUnit FindShelfUnit(GameObject go)
+    {
+        if (go == null) return null;
+        ShelfUnit shelf = go.GetComponent<ShelfUnit>();
+        return shelf != null ? shelf : go.GetComponentInParent<ShelfUnit>();
+    }
+
+    bool ShouldCountShelfCollision(ShelfUnit shelf)
+    {
+        if (shelf == null) return false;
+        if (currentPhase != Phase.Delivering) return true;
+
+        ShelfUnit targetShelf = targetShelfTransform != null
+            ? targetShelfTransform.GetComponent<ShelfUnit>() ??
+              targetShelfTransform.GetComponentInParent<ShelfUnit>()
+            : null;
+        return targetShelf != shelf;
+    }
+
+    bool RegisterShelfContact(ShelfUnit shelf)
+    {
+        if (activeShelfContacts.TryGetValue(shelf, out int count))
+        {
+            activeShelfContacts[shelf] = count + 1;
+            return false;
+        }
+
+        activeShelfContacts.Add(shelf, 1);
+        return true;
+    }
+
+    void UnregisterShelfContact(ShelfUnit shelf)
+    {
+        if (!activeShelfContacts.TryGetValue(shelf, out int count)) return;
+
+        if (count <= 1)
+            activeShelfContacts.Remove(shelf);
+        else
+            activeShelfContacts[shelf] = count - 1;
     }
 
     bool IsOtherAgent(GameObject go)

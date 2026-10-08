@@ -101,6 +101,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
         public float targetDurationSeconds;
         public int completedTasks;
         public int wallCollisions;
+        public int shelfCollisions;
         public int agentCollisions;
         public int totalCollisions;
         public int simulationSteps;
@@ -416,6 +417,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
 
             int completed = CompletedCount();
             int wallCollisions = SumWallCollisions();
+            int shelfCollisions = SumShelfCollisions();
             int agentCollisions = SumAgentCollisions();
             float simulated = simulationSteps * Time.fixedDeltaTime;
             var result = new TrialResult
@@ -430,13 +432,16 @@ public class WarehouseModelTestRunner : MonoBehaviour
                     ? durationSecondsPerTrial : 0f,
                 completedTasks = completed,
                 wallCollisions = wallCollisions,
+                shelfCollisions = shelfCollisions,
                 agentCollisions = agentCollisions,
-                totalCollisions = wallCollisions + agentCollisions,
+                totalCollisions = wallCollisions + shelfCollisions + agentCollisions,
                 simulationSteps = simulationSteps,
                 simulationSeconds = simulated,
                 wallSeconds = Time.realtimeSinceStartup - wallStart,
                 tasksPerSimulationMinute = simulated > 0f ? completed * 60f / simulated : 0f,
-                collisionsPerTask = completed > 0 ? (wallCollisions + agentCollisions) / (float)completed : 0f,
+                collisionsPerTask = completed > 0
+                    ? (wallCollisions + shelfCollisions + agentCollisions) / (float)completed
+                    : 0f,
                 stopReason = stopReason
             };
             trialResults.Add(result);
@@ -452,7 +457,9 @@ public class WarehouseModelTestRunner : MonoBehaviour
             }
 
             Debug.Log($"[ModelTestRunner] {model.name} trial {trialNumber}/{trialsPerModel}: " +
-                      $"completed={result.completedTasks}, collisions={result.totalCollisions}, " +
+                      $"completed={result.completedTasks}, collisions={result.totalCollisions} " +
+                      $"(wall={result.wallCollisions}, shelf={result.shelfCollisions}, " +
+                      $"agent={result.agentCollisions}), " +
                       $"simulated={result.simulationSeconds:F2}s, stop={result.stopReason}");
             yield return new WaitForSecondsRealtime(0.1f);
         }
@@ -857,11 +864,19 @@ public class WarehouseModelTestRunner : MonoBehaviour
         return total;
     }
 
+    int SumShelfCollisions()
+    {
+        int total = 0;
+        foreach (WarehouseRobotAgent agent in agents)
+            if (agent != null) total += agent.crashToShelf;
+        return total;
+    }
+
     static string BuildTrialCsv(IReadOnlyList<TrialResult> results)
     {
         var c = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
-        sb.AppendLine("model,trial,trial_seed,stop_condition,target_completed_tasks,target_duration_seconds,completed_tasks,wall_collisions,agent_collisions,total_collisions,simulation_steps,simulation_seconds,wall_seconds,tasks_per_simulation_minute,collisions_per_task,stop_reason");
+        sb.AppendLine("model,trial,trial_seed,stop_condition,target_completed_tasks,target_duration_seconds,completed_tasks,wall_collisions,shelf_collisions,agent_collisions,total_collisions,simulation_steps,simulation_seconds,wall_seconds,tasks_per_simulation_minute,collisions_per_task,stop_reason");
         foreach (TrialResult result in results)
         {
             sb.Append(EscapeCsv(result.model)).Append(',')
@@ -872,6 +887,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
               .Append(result.targetDurationSeconds.ToString("F3", c)).Append(',')
               .Append(result.completedTasks).Append(',')
               .Append(result.wallCollisions).Append(',')
+              .Append(result.shelfCollisions).Append(',')
               .Append(result.agentCollisions).Append(',')
               .Append(result.totalCollisions).Append(',')
               .Append(result.simulationSteps).Append(',')
@@ -888,12 +904,15 @@ public class WarehouseModelTestRunner : MonoBehaviour
     {
         var c = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
-        sb.AppendLine("model,trials,stop_condition,mean_completed_tasks,std_completed_tasks,mean_simulation_seconds,std_simulation_seconds,mean_total_collisions,std_total_collisions,mean_tasks_per_simulation_minute,std_tasks_per_simulation_minute,mean_collisions_per_task,std_collisions_per_task");
+        sb.AppendLine("model,trials,stop_condition,mean_completed_tasks,std_completed_tasks,mean_simulation_seconds,std_simulation_seconds,mean_wall_collisions,std_wall_collisions,mean_shelf_collisions,std_shelf_collisions,mean_agent_collisions,std_agent_collisions,mean_total_collisions,std_total_collisions,mean_tasks_per_simulation_minute,std_tasks_per_simulation_minute,mean_collisions_per_task,std_collisions_per_task");
         if (results.Count == 0)
             return sb.ToString();
 
         float meanCompleted = Mean(results, result => result.completedTasks);
         float meanSimulationSeconds = Mean(results, result => result.simulationSeconds);
+        float meanWallCollisions = Mean(results, result => result.wallCollisions);
+        float meanShelfCollisions = Mean(results, result => result.shelfCollisions);
+        float meanAgentCollisions = Mean(results, result => result.agentCollisions);
         float meanCollisions = Mean(results, result => result.totalCollisions);
         float meanThroughput = Mean(results, result => result.tasksPerSimulationMinute);
         float meanCollisionsPerTask = Mean(results, result => result.collisionsPerTask);
@@ -906,6 +925,12 @@ public class WarehouseModelTestRunner : MonoBehaviour
           .Append(PopulationStandardDeviation(results, result => result.completedTasks, meanCompleted).ToString("F6", c)).Append(',')
           .Append(meanSimulationSeconds.ToString("F6", c)).Append(',')
           .Append(PopulationStandardDeviation(results, result => result.simulationSeconds, meanSimulationSeconds).ToString("F6", c)).Append(',')
+          .Append(meanWallCollisions.ToString("F6", c)).Append(',')
+          .Append(PopulationStandardDeviation(results, result => result.wallCollisions, meanWallCollisions).ToString("F6", c)).Append(',')
+          .Append(meanShelfCollisions.ToString("F6", c)).Append(',')
+          .Append(PopulationStandardDeviation(results, result => result.shelfCollisions, meanShelfCollisions).ToString("F6", c)).Append(',')
+          .Append(meanAgentCollisions.ToString("F6", c)).Append(',')
+          .Append(PopulationStandardDeviation(results, result => result.agentCollisions, meanAgentCollisions).ToString("F6", c)).Append(',')
           .Append(meanCollisions.ToString("F6", c)).Append(',')
           .Append(PopulationStandardDeviation(results, result => result.totalCollisions, meanCollisions).ToString("F6", c)).Append(',')
           .Append(meanThroughput.ToString("F6", c)).Append(',')

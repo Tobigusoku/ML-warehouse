@@ -61,7 +61,8 @@ public class WarehouseTrainingManager : MonoBehaviour
     {
         public Vector3 center;
         public Vector3 spreadDir;
-        public float   halfWidth;
+        public float halfWidth;
+        public float spawnHalfWidth;
     }
 
     private struct SpawnSlot
@@ -284,7 +285,8 @@ public class WarehouseTrainingManager : MonoBehaviour
             entrances.Add(new EntranceInfo {
                 center    = envRoot.TransformPoint(new Vector3(-2f, 0.3f, 20f)),
                 spreadDir = envRoot.TransformDirection(Vector3.forward),
-                halfWidth = 2f
+                halfWidth = 2f,
+                spawnHalfWidth = 1.5f
             });
             return;
         }
@@ -297,14 +299,16 @@ public class WarehouseTrainingManager : MonoBehaviour
         float depthOffset = pd / 2f;
         float dw  = warehouseGenerator.doorWidth;
         float margin     = 0.5f;
-        float usableHalf = Mathf.Max(0f, dw / 2f - margin);
+        float gateHalfWidth = Mathf.Max(0f, dw / 2f);
+        float usableHalf = Mathf.Max(0f, gateHalfWidth - margin);
 
         // West (index 0 if doorWest)
         if (warehouseGenerator.doorWest)
             entrances.Add(new EntranceInfo {
                 center    = genTf.TransformPoint(new Vector3(-depthOffset, y, hd / 2f)),
                 spreadDir = genTf.TransformDirection(Vector3.forward),
-                halfWidth = usableHalf
+                halfWidth = gateHalfWidth,
+                spawnHalfWidth = usableHalf
             });
 
         // East (index 0 or 1)
@@ -312,7 +316,8 @@ public class WarehouseTrainingManager : MonoBehaviour
             entrances.Add(new EntranceInfo {
                 center    = genTf.TransformPoint(new Vector3(hw + depthOffset, y, hd / 2f)),
                 spreadDir = genTf.TransformDirection(Vector3.forward),
-                halfWidth = usableHalf
+                halfWidth = gateHalfWidth,
+                spawnHalfWidth = usableHalf
             });
 
         // South
@@ -320,7 +325,8 @@ public class WarehouseTrainingManager : MonoBehaviour
             entrances.Add(new EntranceInfo {
                 center    = genTf.TransformPoint(new Vector3(hw / 2f, y, -depthOffset)),
                 spreadDir = genTf.TransformDirection(Vector3.right),
-                halfWidth = usableHalf
+                halfWidth = gateHalfWidth,
+                spawnHalfWidth = usableHalf
             });
 
         // North
@@ -328,7 +334,8 @@ public class WarehouseTrainingManager : MonoBehaviour
             entrances.Add(new EntranceInfo {
                 center    = genTf.TransformPoint(new Vector3(hw / 2f, y, hd + depthOffset)),
                 spreadDir = genTf.TransformDirection(Vector3.right),
-                halfWidth = usableHalf
+                halfWidth = gateHalfWidth,
+                spawnHalfWidth = usableHalf
             });
 
         if (entrances.Count == 0)
@@ -336,7 +343,8 @@ public class WarehouseTrainingManager : MonoBehaviour
             entrances.Add(new EntranceInfo {
                 center    = genTf.TransformPoint(new Vector3(-depthOffset, y, hd / 2f)),
                 spreadDir = genTf.TransformDirection(Vector3.forward),
-                halfWidth = usableHalf
+                halfWidth = gateHalfWidth,
+                spawnHalfWidth = usableHalf
             });
             Debug.LogWarning("[TrainingManager] 入口が見つかりません。フォールバック設定。");
         }
@@ -354,7 +362,7 @@ public class WarehouseTrainingManager : MonoBehaviour
         {
             var  ent     = entrances[e];
             float spacing = Mathf.Max(0.5f, slotSpacing);
-            int  halfCount = Mathf.FloorToInt(ent.halfWidth / spacing);
+            int  halfCount = Mathf.FloorToInt(ent.spawnHalfWidth / spacing);
 
             for (int i = -halfCount; i <= halfCount; i++)
             {
@@ -637,6 +645,41 @@ public class WarehouseTrainingManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Returns the closest point on the selected gate's full-width line segment.
+    /// The entrance index remains the task identity; only the geometric target point changes.
+    /// </summary>
+    public bool TryGetClosestPointOnEntranceSegment(int entranceIndex, Vector3 fromPosition,
+                                                    out Vector3 closestPoint)
+    {
+        EnsureInitialized();
+        if (entranceIndex < 0 || entranceIndex >= entrances.Count)
+        {
+            closestPoint = Vector3.zero;
+            return false;
+        }
+
+        EntranceInfo entrance = entrances[entranceIndex];
+        closestPoint = ClosestPointOnSegment(
+            entrance.center, entrance.spreadDir, entrance.halfWidth, fromPosition);
+        return true;
+    }
+
+    static Vector3 ClosestPointOnSegment(Vector3 center, Vector3 spreadDir,
+                                         float halfWidth, Vector3 fromPosition)
+    {
+        spreadDir.y = 0f;
+        if (spreadDir.sqrMagnitude < 0.0001f || halfWidth <= 0f)
+            return center;
+
+        spreadDir.Normalize();
+        Vector3 offset = fromPosition - center;
+        offset.y = 0f;
+        float alongGate = Mathf.Clamp(
+            Vector3.Dot(offset, spreadDir), -halfWidth, halfWidth);
+        return center + spreadDir * alongGate;
+    }
+
+    /// <summary>
     /// 指定位置に最も近い入口の座標を返す。
     /// </summary>
     public Vector3 GetNearestEntrance(Vector3 fromPos)
@@ -645,12 +688,14 @@ public class WarehouseTrainingManager : MonoBehaviour
         if (entrances.Count == 0)
             return envRoot != null ? envRoot.position : fromPos;
 
-        Vector3 nearest = entrances[0].center;
+        Vector3 nearest = ClosestPointOnSegment(
+            entrances[0].center, entrances[0].spreadDir, entrances[0].halfWidth, fromPos);
         float   minDist = float.MaxValue;
         foreach (var ent in entrances)
         {
-            float d = Vector3.Distance(fromPos, ent.center);
-            if (d < minDist) { minDist = d; nearest = ent.center; }
+            Vector3 point = ClosestPointOnSegment(ent.center, ent.spreadDir, ent.halfWidth, fromPos);
+            float d = Vector3.Distance(fromPos, point);
+            if (d < minDist) { minDist = d; nearest = point; }
         }
         return nearest;
     }
