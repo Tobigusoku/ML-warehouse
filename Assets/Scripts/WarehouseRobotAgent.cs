@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using Unity.MLAgents;
 using Unity.MLAgents.Actuators;
+using Unity.MLAgents.Policies;
 using Unity.MLAgents.Sensors;
 
 /// <summary>
@@ -18,12 +19,13 @@ using Unity.MLAgents.Sensors;
 ///
 /// ■ BehaviorParameters 設定:
 ///   Behavior Name:       WarehouseRobot
-///   Vector Observation:  Space Size = 56
+///   Vector Observation:  65 (LegacyScalar9) or 83 (VectorField27)
 ///   Continuous Actions:  2
 ///   Discrete Branches:   なし (0)
 /// </summary>
 public class WarehouseRobotAgent : Agent
 {
+    public const int BaseObservationSize = 56;
     private const string ShelfReachedStat = "Warehouse/Task/ShelfReached";
     private const string CompletedTaskStat = "Warehouse/Task/Completed";
     private const string TimeoutStat = "Warehouse/Episode/Timeout";
@@ -160,6 +162,9 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     private Rigidbody rb;
     private Vector3 lastPosition;
+    private Vector3 lastPheromonePosition;
+    private WarehousePheromoneObservationFormat pheromoneObservationFormat =
+        WarehousePheromoneObservationFormat.LegacyScalar9;
     private Phase currentPhase;
     private GameObject cargoVisual;
     private Renderer robotRenderer;
@@ -212,6 +217,38 @@ public class WarehouseRobotAgent : Agent
     // ==========================================
     //  初期化
     // ==========================================
+    protected override void Awake()
+    {
+        if (pheromone == null)
+        {
+            if (trainingManager == null)
+            {
+                foreach (var candidate in transform.root.GetComponentsInChildren<WarehouseTrainingManager>(true))
+                {
+                    if (!candidate.robotAgents.Contains(this)) continue;
+                    trainingManager = candidate;
+                    break;
+                }
+            }
+            if (trainingManager != null)
+                pheromone = trainingManager.GetComponent<WarehousePheromone>();
+        }
+        if (pheromone != null)
+            ConfigurePheromoneObservationFormat(pheromone.observationFormat);
+        base.Awake();
+    }
+
+    public void ConfigurePheromoneObservationFormat(WarehousePheromoneObservationFormat format)
+    {
+        pheromoneObservationFormat = format;
+        var behavior = GetComponent<BehaviorParameters>();
+        if (behavior != null)
+            behavior.BrainParameters.VectorObservationSize = BaseObservationSize + PheromoneObservationSize;
+    }
+
+    int PheromoneObservationSize =>
+        pheromoneObservationFormat == WarehousePheromoneObservationFormat.VectorField27 ? 27 : 9;
+
     public override void Initialize()
     {
         rb = GetComponent<Rigidbody>();
@@ -256,6 +293,7 @@ public class WarehouseRobotAgent : Agent
 
         raySensor = new WarehouseObservations(this);
         lastPosition = transform.position;
+        lastPheromonePosition = transform.position;
     }
 
     /// <summary>
@@ -342,6 +380,7 @@ public class WarehouseRobotAgent : Agent
         bestDistToExit = float.MaxValue;
         // Episode resets teleport the robot; that teleport is not traveled distance.
         lastPosition = transform.position;
+        lastPheromonePosition = transform.position;
     }
 
     /// <summary>Clears counters measured across one evaluation trial.</summary>
@@ -354,6 +393,7 @@ public class WarehouseRobotAgent : Agent
         activeShelfContacts.Clear();
         totalMoveDistance = 0f;
         lastPosition = transform.position;
+        lastPheromonePosition = transform.position;
     }
 
     /// <summary>
@@ -372,9 +412,7 @@ public class WarehouseRobotAgent : Agent
 
     // ==========================================
     //  観測値の収集
-    //  基本観測 8 + レイキャスト 48 = 合計 56
-    //
-    //  BehaviorParameters の Space Size = 56 に設定してください
+    //  基本観測 8 + レイキャスト 48 + フェロモン 9/27 = 合計 65/83
     // ==========================================
     public override void CollectObservations(VectorSensor sensor)
     {
@@ -430,18 +468,18 @@ public class WarehouseRobotAgent : Agent
                 isDelivering,
                 spawnEntranceIndex,
                 sIdx,
-                targetExitIndex);
+                targetExitIndex,
+                transform);
 
             foreach (float value in pheroObservation)
                 sensor.AddObservation(value);
         }
         else
         {
-            // フェロモン取れない場合もゼロで9次元埋める（Space Sizeを固定するため）
-            for (int i = 0; i < 9; i++)
+            // Keep the configured observation shape even when no active map is available.
+            for (int i = 0; i < PheromoneObservationSize; i++)
                 sensor.AddObservation(0f);
-        }                                   // [8] 以降にフェロモン観測を追加 (必要に応じて Space Size を増やす)
-        // 合計: 8 + 48 + 9 = 65
+        }
     }
 
     void AddPolarObservation(VectorSensor sensor, Vector3 targetWorldPos)
@@ -465,6 +503,16 @@ public class WarehouseRobotAgent : Agent
     public override void OnActionReceived(ActionBuffers actions)
     {
         episodeTimer += Time.fixedDeltaTime;
+
+        bool pheromoneIsDelivering = currentPhase == Phase.Delivering;
+        int pheromoneShelfIndex = lastDroppedShelfIndex;
+        if (pheromoneIsDelivering && pheromone != null && targetShelfTransform != null)
+        {
+            var shelf = targetShelfTransform.GetComponent<ShelfUnit>();
+            pheromoneShelfIndex = shelf != null ? pheromone.GetShelfIndex(shelf) : -1;
+        }
+        Vector3 pheromoneMovement = transform.position - lastPheromonePosition;
+        lastPheromonePosition = transform.position;
 
         float moveInput = Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f);
         float turnInput = Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f);
@@ -517,29 +565,14 @@ public class WarehouseRobotAgent : Agent
         // ==========================================
         if (pheromone != null)
         {
-            bool isDelivering = (currentPhase == Phase.Delivering);
-            int sIdx;
-
-            if (isDelivering)
-            {
-                // DELIVERING: ターゲット棚が有効な場合のみ
-                var shelf = targetShelfTransform != null
-                    ? targetShelfTransform.GetComponent<ShelfUnit>() : null;
-                sIdx = (shelf != null) ? pheromone.GetShelfIndex(shelf) : -1;
-            }
-            else
-            {
-                // RETURNING: CompleteDrop で保存済みのインデックスを使用
-                sIdx = lastDroppedShelfIndex;
-            }
-
-            if (sIdx >= 0)
+            if (pheromoneShelfIndex >= 0)
             {
                 float pheroReward = pheromone.StepPheromone(
                     transform.position,
-                    isDelivering,
+                    pheromoneMovement,
+                    pheromoneIsDelivering,
                     spawnEntranceIndex,   // DELIVERING で使用
-                    sIdx,
+                    pheromoneShelfIndex,
                     targetExitIndex);     // RETURNING  で使用
 
                 AddReward(pheroReward);

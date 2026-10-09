@@ -10,10 +10,22 @@ using UnityEngine.SceneManagement;
 
 public enum WarehousePheromoneMode
 {
-    None,
-    Shared,
-    PhaseSeparated,
-    TaskSeparated
+    None = 0,
+    Shared = 1,
+    TaskSeparated = 3,
+    SubtaskSeparated = 4
+}
+
+public enum WarehousePheromoneContent
+{
+    Scalar = 0,
+    Directional = 1
+}
+
+public enum WarehousePheromoneObservationFormat
+{
+    LegacyScalar9 = 0,
+    VectorField27 = 1
 }
 
 [Serializable]
@@ -58,6 +70,10 @@ public class WarehouseExperimentConfig : ScriptableObject
 
     [Header("Pheromone")]
     public WarehousePheromoneMode pheromoneMode = WarehousePheromoneMode.TaskSeparated;
+    public WarehousePheromoneContent pheromoneContent = WarehousePheromoneContent.Scalar;
+    [Tooltip("LegacyScalar9 preserves existing 65-value ONNX inputs. VectorField27 uses strength and local direction for each of the nine cells (83 total observations).")]
+    public WarehousePheromoneObservationFormat pheromoneObservationFormat =
+        WarehousePheromoneObservationFormat.LegacyScalar9;
     public float pheromoneSecretionAmount = 1f;
     [Range(0f, 1f)] public float pheromoneEvaporationRate = 0.05f;
     public int pheromoneEvaporationInterval = 100;
@@ -65,6 +81,8 @@ public class WarehouseExperimentConfig : ScriptableObject
     public float pheromoneMaxValue = 1000000f;
     public float pheromoneRewardScale = 0.0002f;
     public float pheromoneCellSize = 2f;
+    [Min(0f)] public float directionalMovementThreshold = 0.01f;
+    [Min(0.001f)] public float pheromoneObservationNormalizationMax = 1000f;
 
     [Header("Environment preset")]
     [Tooltip("Preferred versioned layout asset. When assigned, it takes priority over the legacy fields below.")]
@@ -141,7 +159,7 @@ public class WarehouseExperimentConfig : ScriptableObject
 /// </summary>
 public static class WarehouseExperimentRuntime
 {
-    public const string ConfigFingerprintVersion = "public-fields-v1";
+    public const string ConfigFingerprintVersion = "public-fields-v2";
     private static readonly Dictionary<WarehouseGenerator, WarehouseTrainingManager> environments =
         new Dictionary<WarehouseGenerator, WarehouseTrainingManager>();
     private static readonly HashSet<WarehouseTrainingManager> readyManagers = new HashSet<WarehouseTrainingManager>();
@@ -431,6 +449,7 @@ public static class WarehouseExperimentRuntime
         agent.exitApproachReward = config.exitApproachReward;
         agent.maxStepLimit = config.maxStepLimit;
         agent.penaltyTimeout = config.penaltyTimeout;
+        agent.ConfigurePheromoneObservationFormat(config.pheromoneObservationFormat);
     }
 
     static void ApplyGenerator(WarehouseGenerator g, WarehouseExperimentConfig c)
@@ -488,11 +507,13 @@ public static class WarehouseExperimentRuntime
         p.evapInterval = c.pheromoneEvaporationInterval;
         p.rewardScale = c.pheromoneRewardScale;
         p.pheromoneMode = c.pheromoneMode;
+        p.pheromoneContent = c.pheromoneContent;
+        p.observationFormat = c.pheromoneObservationFormat;
         p.pheromoneMinValue = c.pheromoneMinValue;
         p.pheromoneMaxValue = c.pheromoneMaxValue;
+        p.directionalMovementThreshold = c.directionalMovementThreshold;
+        p.observationNormalizationMax = c.pheromoneObservationNormalizationMax;
         p.usePheromone = c.pheromoneMode != WarehousePheromoneMode.None;
-        if (c.pheromoneMode == WarehousePheromoneMode.Shared || c.pheromoneMode == WarehousePheromoneMode.PhaseSeparated)
-            Debug.LogWarning($"[ExperimentConfig] Pheromone mode {c.pheromoneMode} is recorded but not implemented by the current route-map code. Current maps remain task-separated.");
     }
 
     static void LogEffective(WarehouseExperimentConfig c, bool preset, WarehouseGenerator g)
@@ -504,6 +525,8 @@ public static class WarehouseExperimentRuntime
         WarehouseTrainingManager m = root != null ? root.GetComponentInChildren<WarehouseTrainingManager>(true) : null;
         string id = c != null ? c.configId : "manual-inspector";
         string mode = c != null ? c.pheromoneMode.ToString() : (p != null ? p.pheromoneMode.ToString() : "Inspector");
+        string content = c != null ? c.pheromoneContent.ToString() : (p != null ? p.pheromoneContent.ToString() : "Inspector");
+        string observations = c != null ? c.pheromoneObservationFormat.ToString() : (p != null ? p.observationFormat.ToString() : "Inspector");
         float evap = c != null ? c.pheromoneEvaporationRate : (p != null ? p.evapRate : 0f);
         float q = c != null ? c.pheromoneSecretionAmount : (p != null ? p.pheroQ : 0f);
         int count = c != null ? c.agentCount : (m != null ? m.robotAgents.Count : 0);
@@ -514,6 +537,8 @@ public static class WarehouseExperimentRuntime
                   $"Asset: {(c != null ? c.name : "(none)")}\n" +
                   $"Trainer Seed: {GetTrainerSeed()}\n" +
                   $"Pheromone Mode: {mode}\n" +
+                  $"Pheromone Content: {content}\n" +
+                  $"Pheromone Observations: {observations}\n" +
                   $"Evaporation Rate: {evap.ToString(CultureInfo.InvariantCulture)}\n" +
                   $"Secretion Amount: {q.ToString(CultureInfo.InvariantCulture)}\n" +
                   $"Configured Agent Count per Environment: {count}\n" +

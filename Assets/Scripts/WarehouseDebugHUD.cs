@@ -36,7 +36,8 @@ public class WarehousePheromoneDebugger : MonoBehaviour
     {
         CompleteRoutes,
         EntranceToShelf,
-        ShelfToExit
+        ShelfToExit,
+        Shared
     }
 
     // ==========================================
@@ -127,7 +128,13 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         {
             Debug.LogWarning("[PheromoneDebugger] WarehousePheromone が見つかりません。");
             enabled = false;
+            return;
         }
+
+        if (phero.Mode == WarehousePheromoneMode.Shared || phero.Mode == WarehousePheromoneMode.None)
+            viewMode = MapViewMode.Shared;
+        else if (!phero.SupportsCompleteRouteMaps)
+            viewMode = MapViewMode.EntranceToShelf;
     }
 
     void ResolveReferences()
@@ -187,7 +194,7 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         // [Tab] 表示単位切り替え
         if (Input.GetKeyDown(KeyCode.Tab))
         {
-            SetViewMode((MapViewMode)(((int)viewMode + 1) % 3));
+            SetViewMode(NextViewMode());
         }
 
         // [↑][↓] マップ選択移動
@@ -237,6 +244,10 @@ public class WarehousePheromoneDebugger : MonoBehaviour
     void RefreshStats()
     {
         if (phero == null || !phero.IsInitialized) return;
+        if (phero.Mode == WarehousePheromoneMode.Shared || phero.Mode == WarehousePheromoneMode.None)
+            viewMode = MapViewMode.Shared;
+        else if (viewMode == MapViewMode.CompleteRoutes && !phero.SupportsCompleteRouteMaps)
+            viewMode = MapViewMode.EntranceToShelf;
 
         int eCount = phero.EntranceCount;
         int sCount = phero.ShelfCount;
@@ -251,7 +262,25 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         activeMapCount = 0;
         totalMapCount = 0;
 
-        if (viewMode == MapViewMode.CompleteRoutes)
+        if (viewMode == MapViewMode.Shared)
+        {
+            totalMapCount = 1;
+            var (total, max, active) = phero.GetDeliveringMapStats(0, 0);
+            globalTotal = total;
+            globalActive = active;
+            activeMapCount = total > 0f ? 1 : 0;
+            if (total > 0f)
+            {
+                topMaps.Add(new MapEntry
+                {
+                    isCompleteRoute = false,
+                    eIdx = -1, sIdx = -1, xIdx = -1,
+                    total = total, max = max, activeCells = active,
+                    label = phero.Mode == WarehousePheromoneMode.None ? "None" : "Shared"
+                });
+            }
+        }
+        else if (viewMode == MapViewMode.CompleteRoutes)
         {
             totalMapCount = eCount * sCount * xCount;
 
@@ -384,6 +413,11 @@ public class WarehousePheromoneDebugger : MonoBehaviour
         if (phero == null || topMaps.Count == 0) return;
 
         var entry = topMaps[selectedIndex];
+        if (viewMode == MapViewMode.Shared)
+        {
+            phero.SetVizTarget(true, -1, null);
+            return;
+        }
         if (entry.isCompleteRoute)
         {
             phero.SetVizRoute(entry.eIdx, entry.sIdx, entry.xIdx);
@@ -398,16 +432,32 @@ public class WarehousePheromoneDebugger : MonoBehaviour
 
     void SetViewMode(MapViewMode mode)
     {
+        if (phero.Mode == WarehousePheromoneMode.Shared || phero.Mode == WarehousePheromoneMode.None)
+            mode = MapViewMode.Shared;
+        else if (mode == MapViewMode.CompleteRoutes && !phero.SupportsCompleteRouteMaps)
+            mode = MapViewMode.EntranceToShelf;
         if (viewMode == mode) return;
         viewMode = mode;
         selectedIndex = 0;
         RefreshStats();
     }
 
+    MapViewMode NextViewMode()
+    {
+        if (phero.Mode == WarehousePheromoneMode.Shared || phero.Mode == WarehousePheromoneMode.None)
+            return MapViewMode.Shared;
+        if (!phero.SupportsCompleteRouteMaps)
+            return viewMode == MapViewMode.EntranceToShelf
+                ? MapViewMode.ShelfToExit
+                : MapViewMode.EntranceToShelf;
+        return (MapViewMode)(((int)viewMode + 1) % 3);
+    }
+
     string GetViewModeLabel()
     {
         switch (viewMode)
         {
+            case MapViewMode.Shared: return phero.Mode == WarehousePheromoneMode.None ? "None" : "Shared";
             case MapViewMode.EntranceToShelf: return "E→S aggregate";
             case MapViewMode.ShelfToExit: return "S→X aggregate";
             default: return "E×S×X routes";
@@ -531,19 +581,29 @@ public class WarehousePheromoneDebugger : MonoBehaviour
 
         // 完全タスク層と2種類の合算ビュー
         const float tabGap = 3f;
-        float tabW = (cw - tabGap * 2f) / 3f;
-        if (GUI.Toggle(new Rect(cx, cy, tabW, lineH),
-                       viewMode == MapViewMode.CompleteRoutes, "E×S×X", tabStyle) &&
-            viewMode != MapViewMode.CompleteRoutes)
-            SetViewMode(MapViewMode.CompleteRoutes);
-        if (GUI.Toggle(new Rect(cx + tabW + tabGap, cy, tabW, lineH),
-                       viewMode == MapViewMode.EntranceToShelf, "E→S", tabStyle) &&
-            viewMode != MapViewMode.EntranceToShelf)
-            SetViewMode(MapViewMode.EntranceToShelf);
-        if (GUI.Toggle(new Rect(cx + (tabW + tabGap) * 2f, cy, tabW, lineH),
-                       viewMode == MapViewMode.ShelfToExit, "S→X", tabStyle) &&
-            viewMode != MapViewMode.ShelfToExit)
-            SetViewMode(MapViewMode.ShelfToExit);
+        if (viewMode == MapViewMode.Shared)
+        {
+            GUI.Toggle(new Rect(cx, cy, cw, lineH), true, GetViewModeLabel(), tabStyle);
+        }
+        else
+        {
+            float tabW = (cw - tabGap * 2f) / 3f;
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && phero.SupportsCompleteRouteMaps;
+            if (GUI.Toggle(new Rect(cx, cy, tabW, lineH),
+                           viewMode == MapViewMode.CompleteRoutes, "E×S×X", tabStyle) &&
+                viewMode != MapViewMode.CompleteRoutes)
+                SetViewMode(MapViewMode.CompleteRoutes);
+            GUI.enabled = previousEnabled;
+            if (GUI.Toggle(new Rect(cx + tabW + tabGap, cy, tabW, lineH),
+                           viewMode == MapViewMode.EntranceToShelf, "E→S", tabStyle) &&
+                viewMode != MapViewMode.EntranceToShelf)
+                SetViewMode(MapViewMode.EntranceToShelf);
+            if (GUI.Toggle(new Rect(cx + (tabW + tabGap) * 2f, cy, tabW, lineH),
+                           viewMode == MapViewMode.ShelfToExit, "S→X", tabStyle) &&
+                viewMode != MapViewMode.ShelfToExit)
+                SetViewMode(MapViewMode.ShelfToExit);
+        }
         cy += lineH;
 
         DrawSeparator(ref cy, cx, cw);

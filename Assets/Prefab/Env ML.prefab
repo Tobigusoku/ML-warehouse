@@ -49,6 +49,7 @@ MonoBehaviour:
   robotAgents:
   - {fileID: 1207639656171711077}
   envRoot: {fileID: 8437481846801556006}
+  robotPrefab: {fileID: 1388638906661447619, guid: fc9c6bf82645b80498f5cedc75deefda, type: 3}
   autoSpawnCount: 0
   robotSize: {x: 0.8, y: 0.5, z: 1}
   robotColor: {r: 0.2, g: 0.6, b: 0.9, a: 1}
@@ -132,7 +133,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   useExperimentConfig: 1
-  experimentConfig: {fileID: 11400000, guid: 9324635475c857948833492304533b51, type: 2}
+  experimentConfig: {fileID: 11400000, guid: 0479d1aaeaa791f4abf87fe7d493b732, type: 2}
   experimentRunId: 
   environmentPreset: {fileID: 0}
   preset: 0

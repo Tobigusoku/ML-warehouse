@@ -56,8 +56,12 @@ public static class WarehouseStartupChecks
                 InvokeInstance(manager, "ReconcileConfiguredAgentCount");
                 Require(manager.robotAgents.Count == 2 && manager.robotAgents.TrueForAll(a => a.gameObject.activeInHierarchy),
                     "Config spawns missing agents at runtime");
-                Require(manager.robotAgents[1].transform.localScale == manager.robotAgents[0].transform.localScale,
-                    "Spawned agents match the placed agent's physical size");
+                Require(manager.robotAgents[1].transform.localScale == manager.robotPrefab.transform.localScale,
+                    "Spawned agents preserve the configured prefab's physical size");
+                Require(manager.robotAgents[1].GetComponent<MeshFilter>().sharedMesh ==
+                        manager.robotPrefab.GetComponent<MeshFilter>().sharedMesh &&
+                        manager.robotAgents[1].GetComponent<WarehousePheromoneDebugger>() != null,
+                    "Spawned agents preserve the prefab mesh and components");
                 Invoke("ValidateAgentRoster", g, manager, false);
             }, ref passed);
 
@@ -254,6 +258,55 @@ public static class WarehouseStartupChecks
 
             Check(() =>
             {
+                Require((int)WarehousePheromoneMode.TaskSeparated == 3,
+                    "TaskSeparated keeps its serialized numeric value");
+                Require(Array.IndexOf(Enum.GetNames(typeof(WarehousePheromoneMode)), "PhaseSeparated") < 0,
+                    "Unused PhaseSeparated mode is removed");
+                Require((int)WarehousePheromoneMode.SubtaskSeparated == 4,
+                    "SubtaskSeparated has a new non-conflicting serialized value");
+
+                var pheromoneObject = new GameObject("SubtaskPheromone");
+                objects.Add(pheromoneObject);
+                var phero = pheromoneObject.AddComponent<WarehousePheromone>();
+                phero.pheromoneMode = WarehousePheromoneMode.SubtaskSeparated;
+                phero.pheromoneContent = WarehousePheromoneContent.Scalar;
+                phero.cellSize = 2f;
+                SetField(phero, "entranceCount", 2);
+                SetField(phero, "exitCount", 2);
+                SetField(phero, "shelfCount", 2);
+                SetField(phero, "gridW", 1);
+                SetField(phero, "gridD", 1);
+                SetField(phero, "cellCount", 1);
+                SetField(phero, "genTransform", pheromoneObject.transform);
+                SetField(phero, "initialized", true);
+                InvokeInstance(phero, "AllocateMaps");
+
+                phero.StepPheromone(Vector3.zero, true, 0, 0, 0);
+                Require(phero.GetValue(Vector3.zero, true, 0, 0, 1) > 0f,
+                    "Delivering subtask map is shared across destination exits");
+                Require(Mathf.Approximately(phero.GetValue(Vector3.zero, true, 1, 0, 0), 0f),
+                    "Different entrance-to-shelf subtasks remain isolated");
+
+                phero.StepPheromone(Vector3.zero, false, 1, 0, 1);
+                Require(phero.GetValue(Vector3.zero, false, 0, 0, 1) > 0f,
+                    "Returning subtask map is shared across spawn entrances");
+
+                phero.ResetAll();
+                phero.pheromoneContent = WarehousePheromoneContent.Directional;
+                phero.observationFormat = WarehousePheromoneObservationFormat.VectorField27;
+                float reward = phero.StepPheromone(
+                    Vector3.zero, Vector3.right, true, 0, 0, 0);
+                float[] observation = phero.GetPheromoneObservationList(
+                    Vector3.zero, true, 0, 0, 1, pheromoneObject.transform);
+                Require(Mathf.Approximately(reward, 0f),
+                    "Directional pheromone does not add a pheromone reward");
+                Require(observation.Length == 27 && observation[0] > 0f &&
+                        observation[1] > 0.99f && Mathf.Abs(observation[2]) < 0.001f,
+                    "Directional observation contains normalized strength and local movement direction");
+            }, ref passed);
+
+            Check(() =>
+            {
                 var firstObject = new GameObject("FirstHud");
                 var secondObject = new GameObject("SecondHud");
                 var pheromoneObject = new GameObject("PheromoneVizSelection");
@@ -332,6 +385,8 @@ public static class WarehouseStartupChecks
         var manager = Child(root, "Manager").AddComponent<WarehouseTrainingManager>();
         manager.warehouseGenerator = generator;
         manager.envRoot = root.transform;
+        manager.robotPrefab = AssetDatabase.LoadAssetAtPath<WarehouseRobotAgent>("Assets/Prefab/Agent.prefab");
+        Require(manager.robotPrefab != null, "Agent prefab is available for automatic spawning");
         manager.gameObject.AddComponent<WarehousePheromone>().warehouseGenerator = generator;
         for (int i = 0; i < agents; i++)
         {
@@ -379,6 +434,12 @@ public static class WarehouseStartupChecks
         {
             throw error.InnerException ?? error;
         }
+    }
+
+    static void SetField(object target, string name, object value)
+    {
+        target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            .SetValue(target, value);
     }
 
     static object InvokeManagerStatic(string name, params object[] args)

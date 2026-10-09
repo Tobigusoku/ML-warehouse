@@ -132,57 +132,133 @@ public class WarehousePheromoneFinalReport : MonoBehaviour
         float[] routeMap = new float[stats.cellCount];
         float globalRouteMax = 0f;
         var summary = new StringBuilder();
-        summary.AppendLine("entrance,shelf,exit,total,max,active_cells,active_ratio,png,csv");
+        summary.AppendLine("phase,entrance,shelf,exit,total,max,active_cells,active_ratio,png,csv,direction_x_csv,direction_z_csv");
 
-        for (int e = 0; e < phero.EntranceCount; e++)
+        if (phero.SupportsCompleteRouteMaps)
         {
+            for (int e = 0; e < phero.EntranceCount; e++)
             for (int s = 0; s < phero.ShelfCount; s++)
+            for (int x = 0; x < phero.ExitCount; x++)
             {
-                for (int x = 0; x < phero.ExitCount; x++)
-                {
-                    if (!phero.TryGetRouteMap(e, s, x, routeMap))
-                        continue;
-
-                    var routeStats = phero.CalcValuesStats(routeMap);
-                    if (routeStats.max > globalRouteMax)
-                        globalRouteMax = routeStats.max;
-                }
+                if (!phero.TryGetRouteMap(e, s, x, routeMap)) continue;
+                globalRouteMax = Mathf.Max(globalRouteMax, phero.CalcValuesStats(routeMap).max);
             }
         }
-
-        for (int e = 0; e < phero.EntranceCount; e++)
+        else if (phero.Mode == WarehousePheromoneMode.SubtaskSeparated)
         {
+            for (int e = 0; e < phero.EntranceCount; e++)
             for (int s = 0; s < phero.ShelfCount; s++)
             {
-                for (int x = 0; x < phero.ExitCount; x++)
-                {
-                    if (!phero.TryGetRouteMap(e, s, x, routeMap))
-                        continue;
-
-                    var (total, max, active) = phero.CalcValuesStats(routeMap);
-                    string baseName = $"route_e{e + 1}_s{s + 1}_x{x + 1}";
-                    string pngName = baseName + ".png";
-                    string csvName = baseName + ".csv";
-                    string pngPath = Path.Combine(dir, pngName);
-                    string csvPath = Path.Combine(dir, csvName);
-
-                    WriteRoutePng(routeMap, stats.gridW, stats.gridD, globalRouteMax, pngPath);
-                    WriteRouteCsv(routeMap, stats.gridW, stats.gridD, csvPath);
-
-                    summary.Append(e + 1).Append(',');
-                    summary.Append(s + 1).Append(',');
-                    summary.Append(x + 1).Append(',');
-                    summary.Append(total.ToString(CultureInfo.InvariantCulture)).Append(',');
-                    summary.Append(max.ToString(CultureInfo.InvariantCulture)).Append(',');
-                    summary.Append(active).Append(',');
-                    summary.Append((stats.cellCount > 0 ? (float)active / stats.cellCount : 0f).ToString(CultureInfo.InvariantCulture)).Append(',');
-                    summary.Append(pngName).Append(',');
-                    summary.Append(csvName).AppendLine();
-                }
+                if (!phero.TryGetDeliveringMap(e, s, routeMap)) continue;
+                globalRouteMax = Mathf.Max(globalRouteMax, phero.CalcValuesStats(routeMap).max);
             }
+            for (int s = 0; s < phero.ShelfCount; s++)
+            for (int x = 0; x < phero.ExitCount; x++)
+            {
+                if (!phero.TryGetReturningMap(s, x, routeMap)) continue;
+                globalRouteMax = Mathf.Max(globalRouteMax, phero.CalcValuesStats(routeMap).max);
+            }
+        }
+        else if (phero.TryGetDeliveringMap(0, 0, routeMap))
+        {
+            globalRouteMax = phero.CalcValuesStats(routeMap).max;
+        }
+
+        if (phero.SupportsCompleteRouteMaps)
+        {
+            for (int e = 0; e < phero.EntranceCount; e++)
+            for (int s = 0; s < phero.ShelfCount; s++)
+            for (int x = 0; x < phero.ExitCount; x++)
+            {
+                if (!phero.TryGetRouteMap(e, s, x, routeMap)) continue;
+                WriteMap(phero, routeMap, stats, globalRouteMax, dir,
+                    $"route_e{e + 1}_s{s + 1}_x{x + 1}", "task",
+                    (e + 1).ToString(), (s + 1).ToString(), (x + 1).ToString(),
+                    true, e, s, x, summary);
+            }
+        }
+        else if (phero.Mode == WarehousePheromoneMode.SubtaskSeparated)
+        {
+            for (int e = 0; e < phero.EntranceCount; e++)
+            for (int s = 0; s < phero.ShelfCount; s++)
+            {
+                if (!phero.TryGetDeliveringMap(e, s, routeMap)) continue;
+                WriteMap(phero, routeMap, stats, globalRouteMax, dir,
+                    $"delivering_e{e + 1}_s{s + 1}", "delivering",
+                    (e + 1).ToString(), (s + 1).ToString(), "",
+                    true, e, s, 0, summary);
+            }
+            for (int s = 0; s < phero.ShelfCount; s++)
+            for (int x = 0; x < phero.ExitCount; x++)
+            {
+                if (!phero.TryGetReturningMap(s, x, routeMap)) continue;
+                WriteMap(phero, routeMap, stats, globalRouteMax, dir,
+                    $"returning_s{s + 1}_x{x + 1}", "returning",
+                    "", (s + 1).ToString(), (x + 1).ToString(),
+                    false, 0, s, x, summary);
+            }
+        }
+        else if (phero.TryGetDeliveringMap(0, 0, routeMap))
+        {
+            WriteMap(phero, routeMap, stats, globalRouteMax, dir,
+                "shared", "shared", "", "", "",
+                true, 0, 0, 0, summary);
         }
 
         File.WriteAllText(Path.Combine(dir, "summary.csv"), summary.ToString(), Encoding.UTF8);
+    }
+
+    static void WriteMap(WarehousePheromone phero, float[] values,
+                         WarehousePheromone.PheromoneUsageStats stats,
+                         float globalMax, string directory, string baseName, string phase,
+                         string entrance, string shelf, string exit,
+                         bool isDelivering, int entranceIndex, int shelfIndex, int exitIndex,
+                         StringBuilder summary)
+    {
+        var (total, max, active) = CalcStats(values);
+        string pngName = baseName + ".png";
+        string csvName = baseName + ".csv";
+        WriteRoutePng(values, stats.gridW, stats.gridD, globalMax, Path.Combine(directory, pngName));
+        WriteRouteCsv(values, stats.gridW, stats.gridD, Path.Combine(directory, csvName));
+
+        string directionXName = string.Empty;
+        string directionZName = string.Empty;
+        if (phero.Content == WarehousePheromoneContent.Directional)
+        {
+            var directionX = new float[stats.cellCount];
+            var directionZ = new float[stats.cellCount];
+            if (phero.TryGetDirectionMap(isDelivering, entranceIndex, shelfIndex, exitIndex,
+                                         directionX, directionZ))
+            {
+                directionXName = baseName + "_direction_x.csv";
+                directionZName = baseName + "_direction_z.csv";
+                WriteRouteCsv(directionX, stats.gridW, stats.gridD, Path.Combine(directory, directionXName));
+                WriteRouteCsv(directionZ, stats.gridW, stats.gridD, Path.Combine(directory, directionZName));
+            }
+        }
+
+        summary.Append(phase).Append(',').Append(entrance).Append(',').Append(shelf).Append(',').Append(exit).Append(',');
+        summary.Append(total.ToString(CultureInfo.InvariantCulture)).Append(',');
+        summary.Append(max.ToString(CultureInfo.InvariantCulture)).Append(',').Append(active).Append(',');
+        summary.Append((stats.cellCount > 0 ? (float)active / stats.cellCount : 0f).ToString(CultureInfo.InvariantCulture)).Append(',');
+        summary.Append(pngName).Append(',').Append(csvName).Append(',');
+        summary.Append(directionXName).Append(',').Append(directionZName).AppendLine();
+    }
+
+    static (float total, float max, int active) CalcStats(float[] values)
+    {
+        float total = 0f;
+        float max = 0f;
+        int active = 0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            float value = values[i];
+            if (value <= 0.001f) continue;
+            total += value;
+            max = Mathf.Max(max, value);
+            active++;
+        }
+        return (total, max, active);
     }
 
     static void WriteRoutePng(float[] values, int gridW, int gridD, float max, string path)

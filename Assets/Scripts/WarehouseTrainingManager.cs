@@ -33,6 +33,9 @@ public class WarehouseTrainingManager : MonoBehaviour
     public Transform envRoot;
 
     [Header("===== ロボット自動生成 =====")]
+    [Tooltip("不足するロボットを実行時に複製するPrefab")]
+    public WarehouseRobotAgent robotPrefab;
+
     [Tooltip("自動生成するロボット数 (0=手動配置のみ)")]
     public int autoSpawnCount = 0;
     public Vector3 robotSize  = new Vector3(0.8f, 0.5f, 1.0f);
@@ -461,8 +464,7 @@ public class WarehouseTrainingManager : MonoBehaviour
 
         // ==========================================
         //  フェロモン連携: スポーン入口インデックスをエージェントに渡す
-        //  WarehousePheromone.StepPheromone (DELIVERING フェーズ) が
-        //  pheroDelivering[entranceIdx * shelfCount + shelfIdx] に記録する。
+        //  WarehousePheromoneのマップ選択に使う。
         // ==========================================
         agent.spawnEntranceIndex = entranceIdx;
 
@@ -807,56 +809,66 @@ public class WarehouseTrainingManager : MonoBehaviour
     // ==========================================
     WarehouseRobotAgent SpawnRobot(int index)
     {
-        Vector3 spawnSize = robotSize;
-        if (robotAgents.Count > 0 && robotAgents[0] != null)
-            spawnSize = robotAgents[0].transform.localScale;
-
-        var robotGo  = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        // Set references and config before Agent.OnEnable initializes physics and sensors.
-        robotGo.SetActive(false);
-        robotGo.transform.SetParent(envRoot, true);
-        robotGo.name = $"WarehouseRobot_{index}";
-        robotGo.transform.localScale = spawnSize;
-
-        if (entrances.Count > 0)
-            robotGo.transform.position = entrances[index % entrances.Count].center;
-        else
+        if (robotPrefab == null)
         {
-            Vector3 fallback = new Vector3(0f, robotSize.y / 2f + 0.05f, 20f);
-            robotGo.transform.position = envRoot != null
-                ? envRoot.TransformPoint(fallback) : fallback;
+            WarehouseExperimentRuntime.Fail(
+                $"{name}: Agent Prefab is not assigned. " +
+                "Assign Assets/Prefab/Agent.prefab before using automatic agent count adjustment.");
+            return null;
         }
 
-        Color agentColor = Color.HSVToRGB(
-            (robotColor.r + index * 0.15f) % 1f, 0.7f, 0.9f);
-        var mat = new Material(Shader.Find("Standard"));
-        mat.color = agentColor;
-        robotGo.GetComponent<Renderer>().material = mat;
+        // Keep the clone inactive until its environment references and effective config are ready.
+        var staging = new GameObject($"RuntimeAgentStaging_{index}");
+        staging.transform.SetParent(envRoot, false);
+        staging.SetActive(false);
 
-        var rb = robotGo.AddComponent<Rigidbody>();
-        rb.mass = 10f; rb.drag = 1f; rb.angularDrag = 5f;
-        rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ;
+        try
+        {
+            var agent = Instantiate(robotPrefab, staging.transform, false);
+            var robotGo = agent.gameObject;
+            robotGo.SetActive(false);
+            robotGo.transform.SetParent(envRoot, false);
+            robotGo.name = $"WarehouseRobot_{index}";
 
-        var behavior = robotGo.AddComponent<Unity.MLAgents.Policies.BehaviorParameters>();
-        behavior.BehaviorName = "WarehouseRobot";
-        behavior.BrainParameters.VectorObservationSize = 65;
-        behavior.BrainParameters.ActionSpec = Unity.MLAgents.Actuators.ActionSpec.MakeContinuous(2);
-        var agent = robotGo.AddComponent<WarehouseRobotAgent>();
-        var requester = robotGo.AddComponent<Unity.MLAgents.DecisionRequester>();
-        requester.DecisionPeriod = 1;
-        requester.TakeActionsBetweenDecisions = true;
-        agent.trainingManager = this;
-        agent.envRoot         = envRoot;
-        agent.pheromone       = GetComponent<WarehousePheromone>();
-        WarehouseExperimentRuntime.ApplyAgent(agent,
-            warehouseGenerator != null && warehouseGenerator.useExperimentConfig
-                ? warehouseGenerator.experimentConfig : null);
-        robotAgents.Add(agent);
-        robotGo.SetActive(true);
+            if (entrances.Count > 0)
+                robotGo.transform.position = entrances[index % entrances.Count].center;
+            else
+            {
+                Vector3 fallback = new Vector3(0f, robotPrefab.transform.localScale.y + 0.05f, 20f);
+                robotGo.transform.position = envRoot != null
+                    ? envRoot.TransformPoint(fallback) : fallback;
+            }
 
-        if (WarehousePerformance.IsEnabled(p => p.DebugLog))
-            Debug.Log($"[TrainingManager] ロボット '{robotGo.name}' を自動生成");
-        return agent;
+            var behavior = robotGo.GetComponent<Unity.MLAgents.Policies.BehaviorParameters>();
+            if (behavior == null)
+            {
+                DestroyRuntimeObject(robotGo);
+                WarehouseExperimentRuntime.Fail(
+                    $"{name}: Agent Prefab '{robotPrefab.name}' has no BehaviorParameters component.");
+                return null;
+            }
+
+            var localPheromone = GetComponent<WarehousePheromone>();
+            behavior.BrainParameters.VectorObservationSize = WarehouseRobotAgent.BaseObservationSize +
+                (localPheromone != null ? localPheromone.PheromoneObservationSize : 9);
+
+            agent.trainingManager = this;
+            agent.envRoot         = envRoot;
+            agent.pheromone       = localPheromone;
+            WarehouseExperimentRuntime.ApplyAgent(agent,
+                warehouseGenerator != null && warehouseGenerator.useExperimentConfig
+                    ? warehouseGenerator.experimentConfig : null);
+            robotAgents.Add(agent);
+            robotGo.SetActive(true);
+
+            if (WarehousePerformance.IsEnabled(p => p.DebugLog))
+                Debug.Log($"[TrainingManager] Agent Prefabから '{robotGo.name}' を自動生成");
+            return agent;
+        }
+        finally
+        {
+            DestroyRuntimeObject(staging);
+        }
     }
 
     // ==========================================

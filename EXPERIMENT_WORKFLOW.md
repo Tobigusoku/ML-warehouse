@@ -38,6 +38,7 @@ mlagents-learn --help
   `Use Experiment Config` の値を選ぶ。Inspectorのrun IDを使う場合も全環境でそろえる。
 - 各 `Env ML` の下にGenerator、Manager、Agentを置き、PheromoneはManagerと同じObjectに付ける。
   Managerの `Warehouse Generator` と `Env Root` は同じ環境内を参照させる。
+- Managerの `Agent Prefab` に `Assets/Prefab/Agent.prefab` を指定する。`Env ML.prefab` には設定済み。
 - 配置済みAgentはManagerの `Robot Agents` に全て1回ずつ登録する。
   Config使用時は `Agent Count` が1環境あたりの実行Agent数になる。不足分はPlay開始時に自動生成し、
   配置数が多い場合は末尾のAgentをそのPlay中だけ無効化する。SceneやPrefab上の配置は変更しない。
@@ -48,8 +49,10 @@ mlagents-learn --help
   フィンガープリント不一致になる。旧モデルだけManual Overrideを使うか、不一致停止を一時的に解除する。
   新しい正式runでは不一致停止を有効に戻し、現在のConfigから学習とテストを行う。
   学習済みConfigを上書きしてエラーを回避しない。
-- 配置済みAgentが不足している場合は、ConfigのAgent数まで自動生成する。
-  生成されるBehaviorは `WarehouseRobot`、観測65、連続行動2、DecisionPeriod 1。
+- 配置済みAgentが不足している場合は、`Agent Prefab` をConfigのAgent数まで複製する。
+  Mesh、Collider、Behavior、DecisionRequester、追加コンポーネントはPrefabを引き継ぐ。観測数はConfigに従い、
+  `LegacyScalar9` なら65、`VectorField27` なら83になる。
+  `Agent Prefab` が未指定のまま自動生成が必要な場合は起動を停止する。
   手動設定モードでは既存の `Auto Spawn Count` を使う。
 - 全環境の初期化・数の検証が完了してからConsoleとJSONへ実数を記録する。
   並列環境数は自動記録されるため入力不要で、学習8環境・テスト1環境でもよい。
@@ -71,13 +74,14 @@ environmentInstances[]:
 `environmentInstanceCount` と `effectiveAgentCount` を保存する。
 
 設定検証と試行リセットの回帰チェックはPlayしていない状態で、Unityメニューの
-`Warehouse > Checks > Experiment Startup` から実行できる。Consoleに `PASS: 19 checks` が出れば成功。
+`Warehouse > Checks > Experiment Startup` から実行できる。Consoleに `PASS: 20 checks` が出れば成功。
 
 帰還先は選択されたゲート中心の一点ではなく、ゲート全幅の線分である。出口観測、距離短縮報酬、
 成功判定はすべてAgent位置から線分上の最近傍点を使う。出口indexと完全タスク識別は従来どおりである。
 
-推論中の右側HUDは1枚だけ表示される。上部タブの `E×S×X` は完全タスクマップ1枚、`E→S` は出口を
-またいだ合算、`S→X` は入口をまたいだ合算である。選択中レイヤーが床ヒートマップへ反映される。
+推論中の右側HUDは1枚だけ表示される。`TaskSeparated` の上部タブでは、`E×S×X` は完全タスクマップ1枚、
+`E→S` は出口をまたいだ合算、`S→X` は入口をまたいだ合算である。`SubtaskSeparated` では実在する
+`E→S` と `S→X` の2表示だけを使う。選択中レイヤーが床ヒートマップへ反映される。
 表示が画面高を超えた場合はHUD内をスクロールする。
 
 ## 1. 実験プリセットを一度作る
@@ -101,16 +105,19 @@ Asset name: TaskSeparated_v1
 Config Id: task_v1
 Environment Preset: Small_2Gate_v1
 Pheromone Mode: TaskSeparated
+Pheromone Content: Scalar
+Pheromone Observation Format: LegacyScalar9
 ```
 
-Experiment Configには、フェロモンの分泌量・蒸発率・セルサイズ・エージェント数・
+Experiment Configには、フェロモンのマップ分割・セル内容・観測形式・分泌量・蒸発率・セルサイズ・エージェント数・
 移動パラメータ・報酬を入れる。環境形状はEnvironment Preset側だけで管理する。
 
 注意:
 
-- 現時点で実際に動くフェロモン方式は `None` と `TaskSeparated` だけ。
-- `Shared` と `PhaseSeparated` は選べるが、マップ構造を変えない未実装の設定値である。
-  正式実験の条件として使わない。
+- マップ分割は `None`、`Shared`、`TaskSeparated`、`SubtaskSeparated` を実装済み。
+- セル内容は `Scalar` または `Directional`。Directionalは実移動方向を蓄積・蒸発し、フェロモン報酬を与えない。
+- 既存ONNXを使うConfigは `LegacyScalar9` のままにする。`VectorField27` は観測数83になるため、
+  そのConfigで新しく学習したONNXだけを使用する。
 - 値を変える時は既存Assetを上書きせず、`TaskSeparated_v2` のように新しいAssetを作る。
 
 ## 2. 日常の動作確認をする場合
@@ -380,8 +387,9 @@ results/<model-name>/
   倉庫生成時から棚に置かれていた荷物は残す。再配置後から計測するため、テレポートは移動距離に含めない。
 - `test_experiment.json` には、テストが自動選択か手動上書きか、学習時のConfig、
   実際に適用したConfig、設定内容の一致判定に加えて、終了条件、試行回数、試行seed設定を保存する。
-- 各 `pheromone_trials/trial_XX/pheromone_routes` のPNGは、その試行終了時点の
-  完全タスク（入口 x 棚 x 出口）ごとの最終フェロモン分布。
+- 各 `pheromone_trials/trial_XX/pheromone_routes` には、その試行終了時点のマップが入る。
+  `TaskSeparated` は完全タスク別、`SubtaskSeparated` は配送 `入口 x 棚` と帰還 `棚 x 出口` 別になる。
+  Directionalでは強度PNG/CSVに加え、倉庫ローカル方向X/ZのCSVを出力する。
 - 同じモデル名を再テストすると、同じ場所の `logTest.csv` とフェロモン出力を上書きする。
   現状では、再テスト前に結果を別名で退避するか、モデル/run IDを新しくする必要がある。
 
@@ -390,7 +398,7 @@ results/<model-name>/
 
 ## 6. 比較実験で固定するもの
 
-完全タスク方式と、将来実装するサブタスク方式を比較する時は、少なくとも次をそろえる。
+完全タスク方式とサブタスク方式を比較する時は、少なくとも次をそろえる。
 
 - 倉庫形状、棚数、入口/出口数、障害物生成の有無。
 - エージェント数。
@@ -411,12 +419,12 @@ results/<model-name>/
 | 自動Config選択に失敗する | モデル名とrun IDが同じか、`results/<model-name>/unity_experiment.json` があるか |
 | 設定ハッシュ不一致で止まる | 学習後に同じConfig Assetを編集していないか。新しいv2 Assetを作る |
 | 起動直後にエラー | `Use Experiment Config` がオンなのにAsset未指定ではないか |
-| Agent Count調整後に停止する | `Agent Count` が1以上か、Robot Agentsに参照切れ・重複・別環境Agentがないか |
+| Agent Count調整後に停止する | `Agent Count` が1以上か、`Agent Prefab` が設定済みか、Robot Agentsに参照切れ・重複・別環境Agentがないか |
 | 並列環境のConfig不一致で停止する | 全Env MLで同じConfigアセット・使用フラグ・run IDにする |
 | 学習結果にJSONがない | Editor学習なら `Experiment Run Id` がrun IDと同じか |
 | テストが始まらない | `Is Test Mode`、`Run On Play`、Models配列、Manager/Agent参照 |
 | テスト後もPlayが止まらない | `Stop Play Mode When Finished`、Consoleのエラー、タイムアウト値 |
-| `Shared`/`PhaseSeparated`の比較にならない | 現在は未実装。`TaskSeparated`のまま動く警告が出る |
+| ONNX読込時に観測数エラー | 学習ConfigとテストConfigの `Pheromone Observation Format` が同じか |
 | 同じ結果が消えた | 同名モデルの出力先が上書きされていないか |
 
 ## 8. 現時点での命名例
