@@ -1,9 +1,12 @@
 # 研究状況: ML-Warehouse
 
-最終確認日: 2026-10-09
+最終確認日: 2026-10-15
 
 このファイルはコードと研究状況の同期用である。現状、結果、問題、次作業だけを簡潔に保つ。
+記録の更新ルールは [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) にまとめる。
 操作手順は [EXPERIMENT_WORKFLOW.md](EXPERIMENT_WORKFLOW.md) を参照する。記述が競合する場合はコードを優先する。
+実験記録は `docs/experiments/` に比較実験ごとに1ファイル作り、同一条件のseed違いや追試をまとめる。
+今回の記録は [6Agent・TaskSeparated実験](docs/experiments/task_separated_six_agent_v1.md) を参照。
 
 ## 実装済み (Implemented)
 
@@ -66,6 +69,8 @@
 
 - `WarehouseModelTestRunner` は複数ONNX x 複数試行、固定時間/固定達成数、安全タイムアウト、
   決定的推論、試行seed、終了時Play停止に対応する。
+- `Skip Result Logging` をオンにすると、設定照合と推論は実行し、テスト時のCSV・JSON・フェロモン図は保存しない。
+  既存の結果ファイルには触れず、試行の終了条件とPlay停止設定は維持する。
 - テスト時は学習runのJSONからConfigを自動選択し、内容ハッシュと環境内Agent数を照合する。
   旧モデルや意図的な別条件には `ManualOverride` を使い、その事実をJSONへ記録する。
 - 試行ごとにAgent、棚、タスク割当、フェロモン、計測値をリセットし、CSV、要約CSV、
@@ -86,7 +91,7 @@
 - 推論HUDの単一表示、スクロール、完全タスク層選択は実装済み。多Agentかつ小さいGame Viewでの目視確認待ち。
 - 次の推論ではAgent数を1、2、4体と段階的に増やし、単体方策の再現性と多Agent時の混雑を分けて確認する。
 - `SubtaskSeparated` とDirectional観測は実装済みだが、Unity実機確認と学習比較は未実施。
-- 6Agent推論は `_01`・`_02` の300秒試行を完了。`_03` はUnity Scene Viewの無限エラーで停止し、再実行待ち。
+- 6Agent推論は `_01`～`_03` の300秒試行を完了。初回中断した `_03` も2026-10-12に再実行済み。
 
 ## 最新結果 (Latest Results)
 
@@ -162,12 +167,12 @@
   | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
   | `_01` | 0 | 0.0 | 4 | 3 | 10 | 17 | 算出不可 |
   | `_02` | 116 | 23.2 | 151 | 110 | 60 | 321 | 2.767 |
-  | `_03` | 未完了 | - | - | - | - | - | - |
+  | `_03` | 0 | 0.0 | 4 | 1 | 16 | 21 | 算出不可 |
 
-- `_01` の未達成と `_02` の高い達成数は学習ログの収束差と整合する。ただし各1試行のみで、
+- `_01`・`_03` の未達成と `_02` の高い達成数は学習ログの収束差と整合する。ただし各1試行のみで、
   衝突数はAgent数や達成数で正規化した追試が必要。
-- `_03` は推論中にUnity EditorのScene Viewが0サイズRenderTextureを連続生成し、ログ増大とフリーズが発生したため手動停止した。
-  CSVはヘッダのみで結果として扱わない。
+- `_03` の初回試行はScene Viewエラーで中断したが、2026-10-12の再実行は300秒で正常終了した。
+  上表は再実行時に上書き保存されたCSVの値。
 
 ## 既知の問題 (Known Problems)
 
@@ -177,7 +182,9 @@
 - `tr.py` は最終ONNXを採用する。固定validation seedでcheckpointを選ぶ仕組みはなく、
   `keep_checkpoints: 5` のため過去の良好な方策を失う可能性がある。
 - フェロモン報酬scaleは0.0002、時間ペナルティは-0.001。セル値が約147を超えると、
-  フェロモン報酬が時間ペナルティを上回り、濃い場所への滞留を促す可能性がある。原因とは未確定。
+  フェロモン報酬が時間ペナルティを上回る。6Agent推論の未達成run `_01`・`_03` は
+  セル最大値が約1,899で狭い領域へ集中し、滞留を促す報酬ハックが疑われる。原因とは未確定。
+  観察値と切り分け案は [6Agent・TaskSeparated実験](docs/experiments/task_separated_six_agent_v1.md) を参照。
 - 学習ではフェロモンがEpisodeをまたいで蓄積するが、推論試行はゼロ初期化するため、開始時分布が異なる。
 - `maxStepLimit` は50,000。失敗Episodeが長く、タイムアウト信号が疎になる可能性がある。
 - Agent同士の衝突は双方で数え得る。達成0時の「衝突/タスク」が0になる表示も不適切。
@@ -195,23 +202,22 @@
   表すとは限らない。共通スケール表示と複数レイヤー同時重畳は未実装。
 - Directionalの最終方向値はCSVへ出るが、HUD/床表示は強度ヒートマップのみで方向矢印は未実装。
 - `VectorField27` は観測数が83へ変わるため、65入力の既存ONNXとは互換性がなく再学習が必要。
-- 2026-10-09の `_03` 推論中、Unity Editorが `RenderTexture.Create failed: width & height must be larger than 0` と
+- 2026-10-09の `_03` 初回推論中、Unity Editorが `RenderTexture.Create failed: width & height must be larger than 0` と
   `Graphics.SetRenderTarget called with bad depth RenderBuffer` を大量出力した。スタックは `UnityEditor.SceneView.DoOnGUI`
   のみで倉庫コードを含まず、Scene Viewのレイアウトサイズ0が原因とみられる。手動停止後は出力も停止。
-  再実行前にSceneタブのサイズを戻すかEditor Layoutをリセットする。当該 `Editor.log` は約2.28 GB。
+  当該 `Editor.log` は約2.28 GBまで増大した。2026-10-12の再実行は正常終了したが、再発時はSceneタブのサイズまたはEditor Layoutを確認する。
 
 ## 次タスク (Next Tasks)
 
-1. Unity EditorのScene Viewレイアウトを正常化し、`wh_middle2Gate_six_v1_03` の300秒推論を再実行する。
-2. Unityメニューの20件版回帰チェックを実行し、`SubtaskSeparated + Directional + VectorField27` の
+1. Unityメニューの20件版回帰チェックを実行し、`SubtaskSeparated + Directional + VectorField27` の
    短時間学習/推論で観測数83、サブタスク分離、方向CSVを確認する。
-3. Agent数を2、4体と増やして、棚衝突、Agent衝突、
+2. Agent数を1、2、4体と段階的に増やして、棚衝突、Agent衝突、
    ゲート混雑、観測不足を切り分ける。Agent同士の衝突時に両者を終了・再生成する条件も比較候補とする。
-4. 衝突を主要評価に使う前に、Agent衝突の双方計上とゼロ達成時指標を修正する。
-5. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
-6. `pheromoneRewardScale = 0` と現行条件を比較し、異常挙動が報酬由来か切り分ける。
-7. 成功runのEpisode長を基準に、`maxStepLimit`短縮候補を決める。
-8. `None`、Scalarの`TaskSeparated`、Directionalの`SubtaskSeparated`を同一seed集合で比較する。
+3. 衝突を主要評価に使う前に、Agent衝突の双方計上とゼロ達成時指標を修正する。
+4. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
+5. `pheromoneRewardScale = 0` と現行条件を比較し、異常挙動が報酬由来か切り分ける。
+6. 成功runのEpisode長を基準に、`maxStepLimit`短縮候補を決める。
+7. `None`、Scalarの`TaskSeparated`、Directionalの`SubtaskSeparated`を同一seed集合で比較する。
 
 ## 検討中 (Ideas Under Consideration)
 
@@ -242,10 +248,11 @@
 
 ## 最近変更した主要ファイル (Files Changed Recently)
 
-直近の主な更新: 不足Agentを `Agent.prefab` から複製するようにし、手動配置個体と外観・構成を統一。
+直近の主な更新: 6Agent推論の仮説を実験メモに記録し、研究・開発記録の共通運用を `RESEARCH_WORKFLOW.md` に明文化。
 
 - `Assets/Scripts/WarehouseExperimentConfig.cs`
 - `Assets/Scripts/WarehouseModelTestRunner.cs`
+- `Assets/Scripts/WarehousePheromoneFinalReport.cs`
 - `Assets/Scripts/WarehouseTrainingManager.cs`
 - `Assets/Scripts/WarehouseRobotAgent.cs`
 - `Assets/Scripts/WarehouseDebugHUD.cs`
@@ -255,15 +262,17 @@
 - `Assets/ExperimentConfigs/`
 - `Assets/Prefab/Env ML.prefab`、`Assets/Scenes/ml test.unity`
 - `tr.py`、`tr.txt`、`EXPERIMENT_WORKFLOW.md`
+- `docs/experiments/task_separated_six_agent_v1.md`
+- `RESEARCH_WORKFLOW.md`、`AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
 
-確認済み: 棚衝突版のUnity回帰チェック17件、6Agent・300秒推論の `_01`・`_02` CSV保存、
-Prefab複製変更後のC#本体・Editorコードの警告0・エラー0ビルド。20件版Unity回帰チェック、
+確認済み: 棚衝突版のUnity回帰チェック17件、6Agent・300秒推論の `_01`～`_03` CSV保存、
+記録省略モード実装後のC#本体・Editorコードの警告0・エラー0ビルド。記録省略モードのUnity実機確認、20件版Unity回帰チェック、
 短時間推論、本番Player再ビルド、trainer接続、新仕様での実学習確認は未実施。
 
 ## 次回メモ (Notes for Next Session)
 
 - 作業開始時にこのファイル、学習・テスト前に `EXPERIMENT_WORKFLOW.md` を読む。
-- 次回はScene Viewのレイアウトを直して `_03` を再実行し、追加の5体も円柱Prefabで生成されることを目視確認する。
+- `_03` 再テストは完了。次回は20件版回帰チェックと、追加の5体も円柱Prefabで生成されることを目視確認する。
 - HUDはGame View右側に1枚だけ表示されること、`E×S×X` / `E→S` / `S→X` の選択と床表示が一致すること、
   Agent行が増えたとき縦スクロールできることを確認する。
 - 現在の推論結果は旧中心点仕様の1体条件として保持する。正式比較はゲート全幅仕様で再学習して行う。

@@ -81,6 +81,8 @@ public class WarehouseModelTestRunner : MonoBehaviour
     public bool runOnPlay = true;
     public bool stopPlayModeWhenFinished = true;
     public bool deterministicInference = true;
+    [Tooltip("Run inference without writing CSV, JSON, or pheromone reports. Existing results are left untouched.")]
+    public bool skipResultLogging = false;
 
     private WarehouseTrainingManager manager;
     private WarehouseRobotAgent[] agents;
@@ -299,7 +301,9 @@ public class WarehouseModelTestRunner : MonoBehaviour
         }
 
         running = false;
-        Debug.Log("[ModelTestRunner] All eligible model tests finished. CSV and pheromone reports have been saved.");
+        Debug.Log(skipResultLogging
+            ? "[ModelTestRunner] All eligible model tests finished. Result logging was skipped."
+            : "[ModelTestRunner] All eligible model tests finished. CSV and pheromone reports have been saved.");
 
         if (stopPlayModeWhenFinished)
         {
@@ -361,16 +365,21 @@ public class WarehouseModelTestRunner : MonoBehaviour
     {
         ApplyModel(model);
         WarehousePheromone phero = GetComponentInChildren<WarehousePheromone>(true);
-        string resultDir = GetResultDirectory(model.name);
-        Directory.CreateDirectory(resultDir);
-        WriteTestProvenance(resultDir, model, trainingProvenance, trainingProvenancePath);
+        bool writeResults = !skipResultLogging;
+        string resultDir = writeResults ? GetResultDirectory(model.name) : null;
         var trialResults = new List<TrialResult>();
-        File.WriteAllText(Path.Combine(resultDir, "logTest.csv"), BuildTrialCsv(trialResults), Encoding.UTF8);
-        File.WriteAllText(Path.Combine(resultDir, "logTest_summary.csv"), BuildSummaryCsv(trialResults), Encoding.UTF8);
+        string pheromoneTrialsDirectory = null;
+        if (writeResults)
+        {
+            Directory.CreateDirectory(resultDir);
+            WriteTestProvenance(resultDir, model, trainingProvenance, trainingProvenancePath);
+            File.WriteAllText(Path.Combine(resultDir, "logTest.csv"), BuildTrialCsv(trialResults), Encoding.UTF8);
+            File.WriteAllText(Path.Combine(resultDir, "logTest_summary.csv"), BuildSummaryCsv(trialResults), Encoding.UTF8);
 
-        string pheromoneTrialsDirectory = Path.Combine(resultDir, "pheromone_trials");
-        if (Directory.Exists(pheromoneTrialsDirectory))
-            Directory.Delete(pheromoneTrialsDirectory, true);
+            pheromoneTrialsDirectory = Path.Combine(resultDir, "pheromone_trials");
+            if (Directory.Exists(pheromoneTrialsDirectory))
+                Directory.Delete(pheromoneTrialsDirectory, true);
+        }
 
         Debug.Log($"[ModelTestRunner] Starting {model.name}: trials={trialsPerModel}, " +
                   $"stopCondition={stopCondition}, reseedEachTrial={reseedEachTrial}, baseTrialSeed={baseTrialSeed}");
@@ -446,14 +455,17 @@ public class WarehouseModelTestRunner : MonoBehaviour
             };
             trialResults.Add(result);
 
-            // Rewrite after each trial so an interrupted batch still retains completed trials.
-            File.WriteAllText(Path.Combine(resultDir, "logTest.csv"), BuildTrialCsv(trialResults), Encoding.UTF8);
-            File.WriteAllText(Path.Combine(resultDir, "logTest_summary.csv"), BuildSummaryCsv(trialResults), Encoding.UTF8);
-
-            if (phero != null)
+            if (writeResults)
             {
-                string trialDirectory = Path.Combine(pheromoneTrialsDirectory, $"trial_{trialNumber:D2}");
-                WarehousePheromoneFinalReport.EmitToDirectory(phero, trialDirectory);
+                // Rewrite after each trial so an interrupted batch still retains completed trials.
+                File.WriteAllText(Path.Combine(resultDir, "logTest.csv"), BuildTrialCsv(trialResults), Encoding.UTF8);
+                File.WriteAllText(Path.Combine(resultDir, "logTest_summary.csv"), BuildSummaryCsv(trialResults), Encoding.UTF8);
+
+                if (phero != null)
+                {
+                    string trialDirectory = Path.Combine(pheromoneTrialsDirectory, $"trial_{trialNumber:D2}");
+                    WarehousePheromoneFinalReport.EmitToDirectory(phero, trialDirectory);
+                }
             }
 
             Debug.Log($"[ModelTestRunner] {model.name} trial {trialNumber}/{trialsPerModel}: " +
@@ -464,7 +476,9 @@ public class WarehouseModelTestRunner : MonoBehaviour
             yield return new WaitForSecondsRealtime(0.1f);
         }
 
-        Debug.Log($"[ModelTestRunner] {model.name}: {trialResults.Count} trials saved to {resultDir}");
+        Debug.Log(writeResults
+            ? $"[ModelTestRunner] {model.name}: {trialResults.Count} trials saved to {resultDir}"
+            : $"[ModelTestRunner] {model.name}: {trialResults.Count} trials finished without result logging.");
     }
 
     bool ValidateTrialSettings(out string reason)

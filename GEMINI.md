@@ -1,0 +1,4 @@
+# Repository Instructions
+
+作業前に [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) と [RESEARCH_STATUS.md](RESEARCH_STATUS.md) を読む。
+学習・テストを扱う場合は [EXPERIMENT_WORKFLOW.md](EXPERIMENT_WORKFLOW.md) も読む。

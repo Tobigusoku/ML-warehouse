@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | 日常の動作確認 | Inspectorを直接編集 | 正式結果としては残さない |
 | 正式な学習 | `WarehouseExperimentConfig` を選択 | run IDとプリセットIDを記録する |
-| ONNX推論テスト | 学習記録からConfigを自動選択。必要時だけ手動上書き | `logTest.csv` とフェロモン図を出力する |
+| ONNX推論テスト | 学習記録からConfigを自動選択。必要時だけ手動上書き | 通常はCSVとフェロモン図を出力。動作確認では記録を省略できる |
 
 正式な比較実験では、テストランナーが学習記録から**同じConfigアセットを自動選択**する。
 学習用とテスト用に同じ値を手で二重入力しない。任意条件を試す時だけ、Inspectorで
@@ -327,11 +327,16 @@ ConfigとEnvironment Presetの内容ハッシュを照合する。
   モデル間で同じ試行seed集合を共有できる。
 - `Is Test Mode`: オン。
 - `Run On Play`: オンにすると、Play開始時に自動でテストする。
+- `Skip Result Logging`: 動きだけ見たい場合にオン。CSV、テストJSON、フェロモン図、テスト環境のJSONを保存しない。
+  学習済みモデルのConfig照合には既存の `unity_experiment.json` を読み込む。
+  既存の結果ファイルは上書き・削除しない。Unity Consoleの進捗表示は残る。
+  正式な記録を残すテストではオフに戻す。
 - `Deterministic Inference`: 比較実験ではオンを推奨。
 - `Stop Play Mode When Finished`: オンにすると全モデル完了時にPlay Modeを自動停止する。
 
 自動方式では、`WarehouseGenerator` の `Experiment Config` をテストのために手で設定しない。
 テストランナーがGeneratorの初期化前に設定する。
+`Skip Result Logging` をオンにしても終了条件と `Stop Play Mode When Finished` は変わらない。
 
 テストランナーを使う場合、Behavior Parametersへ各ONNXを手で設定する必要はない。
 ランナーがModels配列のモデルを各Agentへ順に設定する。

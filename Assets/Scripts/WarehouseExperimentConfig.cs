@@ -551,6 +551,12 @@ public static class WarehouseExperimentRuntime
     static void Record(WarehouseGenerator g, WarehouseExperimentConfig c, bool preset)
     {
         if (recorded) return;
+        var runner = GetEnvironmentRoot(g).GetComponent<WarehouseModelTestRunner>();
+        if (runner != null && runner.isTestMode && runner.skipResultLogging)
+        {
+            recorded = true;
+            return;
+        }
         string runId = GetRunId(g);
         string scene = SceneManager.GetActiveScene().name;
         string dir = GetRecordDirectory(runId);

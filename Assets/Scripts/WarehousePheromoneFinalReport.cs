@@ -54,7 +54,7 @@ public class WarehousePheromoneFinalReport : MonoBehaviour
         emitted = true;
 
         var runner = FindObjectOfType<WarehouseModelTestRunner>();
-        if (runner == null || !runner.isTestMode)
+        if (runner == null || !runner.isTestMode || runner.skipResultLogging)
             return;
 
         var phero = FindObjectOfType<WarehousePheromone>();
