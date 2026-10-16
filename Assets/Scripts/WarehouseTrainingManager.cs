@@ -60,14 +60,6 @@ public class WarehouseTrainingManager : MonoBehaviour
     // ==========================================
     //  入口情報
     // ==========================================
-    private struct EntranceInfo
-    {
-        public Vector3 center;
-        public Vector3 spreadDir;
-        public float halfWidth;
-        public float spawnHalfWidth;
-    }
-
     private struct SpawnSlot
     {
         public int    entranceIndex;
@@ -88,7 +80,7 @@ public class WarehouseTrainingManager : MonoBehaviour
     // ==========================================
     //  内部変数
     // ==========================================
-    private List<EntranceInfo>                       entrances     = new List<EntranceInfo>();
+    private List<WarehouseGenerator.WarehouseGateInfo> entrances = new List<WarehouseGenerator.WarehouseGateInfo>();
     private List<SpawnSlot>                          allSlots      = new List<SpawnSlot>();
     private HashSet<int>                             occupiedSlots = new HashSet<int>();
     private List<ShelfUnit>                          allShelves    = new List<ShelfUnit>();
@@ -276,8 +268,7 @@ public class WarehouseTrainingManager : MonoBehaviour
 
     // ==========================================
     //  入口情報の計算
-    //  ※順序は WarehousePheromone.CalcEntranceCount と一致させること:
-    //    West → East → South → North
+    //  Generatorのゲート順序をそのままタスクindexに使う
     // ==========================================
     void CalculateEntrances()
     {
@@ -285,7 +276,7 @@ public class WarehouseTrainingManager : MonoBehaviour
 
         if (warehouseGenerator == null)
         {
-            entrances.Add(new EntranceInfo {
+            entrances.Add(new WarehouseGenerator.WarehouseGateInfo {
                 center    = envRoot.TransformPoint(new Vector3(-2f, 0.3f, 20f)),
                 spreadDir = envRoot.TransformDirection(Vector3.forward),
                 halfWidth = 2f,
@@ -293,64 +284,10 @@ public class WarehouseTrainingManager : MonoBehaviour
             });
             return;
         }
-
-        Transform genTf = warehouseGenerator.transform;
-        float hw  = warehouseGenerator.warehouseWidth;
-        float hd  = warehouseGenerator.warehouseDepth;
-        float y   = robotSize.y / 2f + 0.05f;
-        float pd  = warehouseGenerator.entrancePlatformDepth;
-        float depthOffset = pd / 2f;
-        float dw  = warehouseGenerator.doorWidth;
-        float margin     = 0.5f;
-        float gateHalfWidth = Mathf.Max(0f, dw / 2f);
-        float usableHalf = Mathf.Max(0f, gateHalfWidth - margin);
-
-        // West (index 0 if doorWest)
-        if (warehouseGenerator.doorWest)
-            entrances.Add(new EntranceInfo {
-                center    = genTf.TransformPoint(new Vector3(-depthOffset, y, hd / 2f)),
-                spreadDir = genTf.TransformDirection(Vector3.forward),
-                halfWidth = gateHalfWidth,
-                spawnHalfWidth = usableHalf
-            });
-
-        // East (index 0 or 1)
-        if (warehouseGenerator.doorEast)
-            entrances.Add(new EntranceInfo {
-                center    = genTf.TransformPoint(new Vector3(hw + depthOffset, y, hd / 2f)),
-                spreadDir = genTf.TransformDirection(Vector3.forward),
-                halfWidth = gateHalfWidth,
-                spawnHalfWidth = usableHalf
-            });
-
-        // South
-        if (warehouseGenerator.doorSouth)
-            entrances.Add(new EntranceInfo {
-                center    = genTf.TransformPoint(new Vector3(hw / 2f, y, -depthOffset)),
-                spreadDir = genTf.TransformDirection(Vector3.right),
-                halfWidth = gateHalfWidth,
-                spawnHalfWidth = usableHalf
-            });
-
-        // North
-        if (warehouseGenerator.doorNorth)
-            entrances.Add(new EntranceInfo {
-                center    = genTf.TransformPoint(new Vector3(hw / 2f, y, hd + depthOffset)),
-                spreadDir = genTf.TransformDirection(Vector3.right),
-                halfWidth = gateHalfWidth,
-                spawnHalfWidth = usableHalf
-            });
-
-        if (entrances.Count == 0)
-        {
-            entrances.Add(new EntranceInfo {
-                center    = genTf.TransformPoint(new Vector3(-depthOffset, y, hd / 2f)),
-                spreadDir = genTf.TransformDirection(Vector3.forward),
-                halfWidth = gateHalfWidth,
-                spawnHalfWidth = usableHalf
-            });
+        entrances.AddRange(warehouseGenerator.GetGates(robotSize.y / 2f + 0.05f));
+        if (!warehouseGenerator.doorWest && !warehouseGenerator.doorEast &&
+            !warehouseGenerator.doorSouth && !warehouseGenerator.doorNorth)
             Debug.LogWarning("[TrainingManager] 入口が見つかりません。フォールバック設定。");
-        }
     }
 
     // ==========================================
@@ -414,7 +351,7 @@ public class WarehouseTrainingManager : MonoBehaviour
     {
         allShelves.Clear();
         if (warehouseGenerator != null)
-            allShelves.AddRange(warehouseGenerator.GetComponentsInChildren<ShelfUnit>());
+            allShelves.AddRange(warehouseGenerator.GeneratedShelves);
         else
             allShelves.AddRange(FindObjectsOfType<ShelfUnit>());
 
@@ -660,7 +597,7 @@ public class WarehouseTrainingManager : MonoBehaviour
             return false;
         }
 
-        EntranceInfo entrance = entrances[entranceIndex];
+        WarehouseGenerator.WarehouseGateInfo entrance = entrances[entranceIndex];
         closestPoint = ClosestPointOnSegment(
             entrance.center, entrance.spreadDir, entrance.halfWidth, fromPosition);
         return true;

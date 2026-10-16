@@ -72,6 +72,7 @@ MonoBehaviour:
   penaltyWallStay: -0.1
   penaltyAgentCollision: -1
   penaltyAgentStay: -0.1
+  agentContactStopSeconds: 0
   penaltyTimeStep: -0.001
   penaltyFall: -1
   shelfApproachReward: 1

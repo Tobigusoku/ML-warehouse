@@ -75,9 +75,13 @@ MonoBehaviour:
   cellSize: 2
   pheroQ: 1
   pheromoneMode: 3
+  pheromoneContent: 0
+  observationFormat: 0
   usePheromone: 1
   pheromoneMinValue: 0
   pheromoneMaxValue: 1000000
+  directionalMovementThreshold: 0.01
+  observationNormalizationMax: 1000
   evapRate: 0.05
   evapInterval: 100
   rewardScale: 0.0002
@@ -133,7 +137,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   useExperimentConfig: 1
-  experimentConfig: {fileID: 11400000, guid: 0479d1aaeaa791f4abf87fe7d493b732, type: 2}
+  experimentConfig: {fileID: 11400000, guid: 833ea74fbc2302d419fa77433c2136a2, type: 2}
   experimentRunId: 
   environmentPreset: {fileID: 0}
   preset: 0
@@ -240,6 +244,7 @@ MonoBehaviour:
   runOnPlay: 1
   stopPlayModeWhenFinished: 1
   deterministicInference: 1
+  skipResultLogging: 0
 --- !u!1001 &254183328618220966
 PrefabInstance:
   m_ObjectHideFlags: 0

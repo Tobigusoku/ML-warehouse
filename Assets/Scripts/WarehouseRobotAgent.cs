@@ -102,6 +102,9 @@ public class WarehouseRobotAgent : Agent
     [Tooltip("他のエージェントに押し付け続けた時の毎ステップペナルティ")]
     public float penaltyAgentStay = -0.005f;
 
+    [Tooltip("Agent接触時に両者を停止させるシミュレーション秒数 (0=従来の押し合いルール)")]
+    [Min(0f)] public float agentContactStopSeconds = 0f;
+
     [Tooltip("毎ステップの時間経過ペナルティ")]
     public float penaltyTimeStep = -0.001f;
 
@@ -144,6 +147,8 @@ public class WarehouseRobotAgent : Agent
     public int crashToShelf = 0;
     [HideInInspector]
     public int crashToAgent = 0;
+    [HideInInspector] public int agentContactPairCount = 0;
+    [HideInInspector] public int collisionFreeCompletedCount = 0;
 
     // ==========================================
     //  フェロモン用: 入口・出口インデックス
@@ -193,6 +198,10 @@ public class WarehouseRobotAgent : Agent
     // contact with that shelf a single evaluation event.
     private readonly Dictionary<ShelfUnit, int> activeShelfContacts =
         new Dictionary<ShelfUnit, int>();
+    private readonly Dictionary<WarehouseRobotAgent, int> activeAgentContacts =
+        new Dictionary<WarehouseRobotAgent, int>();
+    private float safetyStopUntil;
+    private bool agentContactThisEpisode;
 
     // ==========================================
     //  デバッグ用 公開プロパティ (HUDから参照)
@@ -376,6 +385,9 @@ public class WarehouseRobotAgent : Agent
         isPushingIntoWall = false;
         isPushingIntoAgent = false;
         activeShelfContacts.Clear();
+        ClearAgentContacts();
+        safetyStopUntil = 0f;
+        agentContactThisEpisode = false;
         bestDistToShelf = float.MaxValue;
         bestDistToExit = float.MaxValue;
         // Episode resets teleport the robot; that teleport is not traveled distance.
@@ -390,7 +402,12 @@ public class WarehouseRobotAgent : Agent
         crashToWall = 0;
         crashToShelf = 0;
         crashToAgent = 0;
+        agentContactPairCount = 0;
+        collisionFreeCompletedCount = 0;
         activeShelfContacts.Clear();
+        ClearAgentContacts();
+        safetyStopUntil = 0f;
+        agentContactThisEpisode = false;
         totalMoveDistance = 0f;
         lastPosition = transform.position;
         lastPheromonePosition = transform.position;
@@ -514,8 +531,9 @@ public class WarehouseRobotAgent : Agent
         Vector3 pheromoneMovement = transform.position - lastPheromonePosition;
         lastPheromonePosition = transform.position;
 
-        float moveInput = Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f);
-        float turnInput = Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f);
+        bool safetyStopped = Time.fixedTime < safetyStopUntil;
+        float moveInput = safetyStopped ? 0f : Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f);
+        float turnInput = safetyStopped ? 0f : Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f);
 
         transform.Rotate(0f, turnInput * turnSpeed * Time.fixedDeltaTime, 0f);
 
@@ -530,7 +548,8 @@ public class WarehouseRobotAgent : Agent
             rb.velocity = new Vector3(hVel.x, vel.y, hVel.z);
         }
 
-        CheckAndResolveStuck(moveInput);
+        if (!safetyStopped) CheckAndResolveStuck(moveInput);
+        else stuckTimer = 0f;
 
         if (currentPhase == Phase.Delivering)
             CheckAutoDropAtShelf();
@@ -545,11 +564,11 @@ public class WarehouseRobotAgent : Agent
             isPushingIntoWall = false;
         }
 
-        if (isPushingIntoAgent)
+        if (isPushingIntoAgent && agentContactStopSeconds <= 0f && !safetyStopped)
         {
             AddReward(penaltyAgentStay);
-            isPushingIntoAgent = false;
         }
+        isPushingIntoAgent = false;
 
         AddShapingReward();
 
@@ -606,6 +625,11 @@ public class WarehouseRobotAgent : Agent
 
     void FixedUpdate()
     {
+        if (rb != null && Time.fixedTime < safetyStopUntil)
+        {
+            rb.velocity = new Vector3(0f, rb.velocity.y, 0f);
+            rb.angularVelocity = Vector3.zero;
+        }
         float moveDistance = Vector3.Distance(lastPosition, transform.position);
         totalMoveDistance += moveDistance;
         lastPosition = transform.position;
@@ -772,6 +796,7 @@ public class WarehouseRobotAgent : Agent
         if (dist <= exitRange)
         {
             completedCount++;
+            if (!agentContactThisEpisode) collisionFreeCompletedCount++;
             AddReward(rewardExitComplete);
             RecordEvent(CompletedTaskStat);
             if (WarehousePerformance.IsEnabled(p => p.DebugLog))
@@ -980,11 +1005,10 @@ public class WarehouseRobotAgent : Agent
             crashToWall++;
             RecordEvent(WallCollisionStat);
         }
-        else if (IsOtherAgent(collision.gameObject))
+        else if (GetOtherAgent(collision.gameObject) is WarehouseRobotAgent other)
         {
-            AddReward(penaltyAgentCollision);
-            crashToAgent++;
-            RecordEvent(AgentCollisionStat);
+            // Both bodies receive callbacks; one stable owner counts the pair and penalizes both.
+            if (GetInstanceID() < other.GetInstanceID()) RegisterAgentContact(other);
         }
     }
 
@@ -1018,9 +1042,12 @@ public class WarehouseRobotAgent : Agent
             return;
         }
 
-        if (IsOtherAgent(collision.gameObject))
+        WarehouseRobotAgent other = GetOtherAgent(collision.gameObject);
+        if (other != null)
         {
-            if (normalComponent < -0.1f)
+            // An episode reset can clear contact state while colliders still overlap.
+            if (GetInstanceID() < other.GetInstanceID()) EnsureAgentContact(other);
+            if (agentContactStopSeconds <= 0f && Time.fixedTime >= safetyStopUntil && normalComponent < -0.1f)
                 isPushingIntoAgent = true;
         }
     }
@@ -1040,9 +1067,10 @@ public class WarehouseRobotAgent : Agent
             isTouchingWall = false;
             isPushingIntoWall = false;
         }
-        else if (IsOtherAgent(collision.gameObject))
+        else if (GetOtherAgent(collision.gameObject) is WarehouseRobotAgent other)
         {
             isPushingIntoAgent = false;
+            if (GetInstanceID() < other.GetInstanceID()) UnregisterAgentContact(other);
         }
     }
 
@@ -1094,13 +1122,71 @@ public class WarehouseRobotAgent : Agent
             activeShelfContacts[shelf] = count - 1;
     }
 
-    bool IsOtherAgent(GameObject go)
+    WarehouseRobotAgent GetOtherAgent(GameObject go)
     {
-        if (go == gameObject) return false;
+        if (go == gameObject) return null;
         var otherAgent = go.GetComponent<WarehouseRobotAgent>();
-        if (otherAgent != null) return true;
+        if (otherAgent != null && otherAgent != this) return otherAgent;
         var parentAgent = go.GetComponentInParent<WarehouseRobotAgent>();
-        return parentAgent != null && parentAgent != this;
+        return parentAgent != this ? parentAgent : null;
+    }
+
+    void RegisterAgentContact(WarehouseRobotAgent other)
+    {
+        if (activeAgentContacts.TryGetValue(other, out int count))
+        {
+            activeAgentContacts[other] = count + 1;
+            return;
+        }
+        activeAgentContacts.Add(other, 1);
+        CountAgentContact(other);
+    }
+
+    void EnsureAgentContact(WarehouseRobotAgent other)
+    {
+        if (!activeAgentContacts.ContainsKey(other)) RegisterAgentContact(other);
+    }
+
+    void CountAgentContact(WarehouseRobotAgent other)
+    {
+        crashToAgent++;
+        other.crashToAgent++;
+        agentContactPairCount++;
+        agentContactThisEpisode = true;
+        other.agentContactThisEpisode = true;
+        AddReward(penaltyAgentCollision);
+        other.AddReward(other.penaltyAgentCollision);
+        RecordEvent(AgentCollisionStat);
+
+        float stopSeconds = Mathf.Max(agentContactStopSeconds, other.agentContactStopSeconds);
+        if (stopSeconds <= 0f) return;
+        float until = Time.fixedTime + stopSeconds;
+        safetyStopUntil = Mathf.Max(safetyStopUntil, until);
+        other.safetyStopUntil = Mathf.Max(other.safetyStopUntil, until);
+        StopHorizontalMotion();
+        other.StopHorizontalMotion();
+    }
+
+    void StopHorizontalMotion()
+    {
+        if (rb == null) return;
+        rb.velocity = new Vector3(0f, rb.velocity.y, 0f);
+        rb.angularVelocity = Vector3.zero;
+    }
+
+    void UnregisterAgentContact(WarehouseRobotAgent other)
+    {
+        if (!activeAgentContacts.TryGetValue(other, out int count)) return;
+        if (count <= 1) activeAgentContacts.Remove(other);
+        else activeAgentContacts[other] = count - 1;
+    }
+
+    void ClearAgentContacts()
+    {
+        activeAgentContacts.Clear();
+        if (trainingManager == null) return;
+        foreach (WarehouseRobotAgent agent in trainingManager.robotAgents)
+            if (agent != null && agent != this) agent.activeAgentContacts.Remove(this);
     }
 
     // ==========================================

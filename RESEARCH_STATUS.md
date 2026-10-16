@@ -1,6 +1,6 @@
 # 研究状況: ML-Warehouse
 
-最終確認日: 2026-10-15
+最終確認日: 2026-10-16
 
 このファイルはコードと研究状況の同期用である。現状、結果、問題、次作業だけを簡潔に保つ。
 記録の更新ルールは [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) にまとめる。
@@ -40,7 +40,12 @@
 ### 設定・記録
 
 - `WarehouseExperimentConfig` がAgent数、報酬、移動、フェロモン条件を保持する。
+- 新規Configの初期値は16Agent、Agent接触停止1秒、接触罰は各Agent -5。
+  既存Configは停止0秒・接触罰-1を明示して旧ルールを維持し、複製時も旧値が引き継がれる。
 - `WarehouseEnvironmentPreset` が倉庫形状、棚、ゲート、障害物、Unity側seedを保持する。
+- Sceneに保存された倉庫はPlay時に無効化して作り直す。編集時の生成ボタンは、Config使用中なら
+  Config/Environment Presetを適用したプレビューを作り、Generatorの手動Inspector値を復元する。
+  Prefab本体では生成・削除ボタンを無効にする。棚一覧とゲート定義はGeneratorからManager/Pheromoneへ渡す。
 - `Use Experiment Config = false` ではInspector値、trueではConfigのコピーを実効値として使う。
   ScriptableObject本体は実行中に変更しない。
 - 起動時に全環境へ同じConfigを適用する。Configの `Agent Count` を1環境あたりの実行数として、
@@ -49,6 +54,8 @@
 - Managerの参照切れ、Agentの重複・別環境参照・登録漏れは停止し、自動調整後の実数も再検証する。
 - `unity_experiment.json` にrun ID、trainer seed、Config/PresetのID・名前・GUID・内容ハッシュ、Scene、
   環境数、設定Agent数、実効Agent数を記録する。
+- 新しいJSONでは環境ごとに実効レイアウトの出典、寸法、生成棚数、ゲート数、棚Collider条件も記録する。
+  自動テストは新しい記録の棚Collider条件と生成レイアウトを照合する。旧JSONは追加欄なしで読める。
 - `Env ML.prefab` には1体を配置し、`taskSaparated_v2` の6体条件では同じ `Agent.prefab` を5体複製する。
 
 ### 学習・テスト
@@ -77,8 +84,15 @@
   選択方式に応じた完全タスク/サブタスク別フェロモンCSV・PNGを出力する。Directionalでは方向X/ZのCSVも出力する。
 - 壁・棚・Agent衝突を別々に計測する。配送中の目的棚への接触は棚衝突から除外し、目的外棚と
   帰還中の棚への接触を数える。同じ棚への継続接触と複数Colliderは1回にまとめる。
+- Agent接触は継続中の同一ペアを1件として計測し、両者へ接触開始時に1回ずつ罰を与える。
+  `Agent Contact Stop Seconds > 0` では両者を指定秒数停止し、停止中の押し合い罰は加えない。
+  0では旧移動・押し合い罰を維持する。時間経過罰と距離短縮報酬は従来どおり。
 - テストCSVと要約CSVは壁・棚・Agent別の衝突数を出力し、合計と1タスク当たり衝突には3種を含める。
-- Unityメニュー `Warehouse > Checks > Experiment Startup` に起動・リセット回帰チェック20件がある。
+- 新CSVの `agent_collisions` は接触したペアの物理イベント数。`collision_free_completed_tasks` は
+  Agent接触なしで完了したタスク数。旧CSVのAgent衝突列は両者計上の可能性があり、直接比較しない。
+- Config内容指紋はv3で停止秒数を含む。既存runのv2指紋は旧フィールドで検証し、
+  旧学習モデルへ停止ありConfigを自動適用しない。
+- Unityメニュー `Warehouse > Checks > Experiment Startup` に起動・リセット回帰チェック23件がある。
 - 推論HUDは画面全体で代表1つだけを描画し、Agent数に応じた重複表示を防ぐ。画面高を超える場合は
   スクロールできる。完全タスク方式では3表示、サブタスク方式では実在する2表示を切り替え、
   選択レイヤーを床ヒートマップへ反映する。
@@ -90,10 +104,24 @@
 - ゲート全幅のゴール領域化は実装済み。Unity実機で端付近からの帰還成功と表示を確認する段階。
 - 推論HUDの単一表示、スクロール、完全タスク層選択は実装済み。多Agentかつ小さいGame Viewでの目視確認待ち。
 - 次の推論ではAgent数を1、2、4体と段階的に増やし、単体方策の再現性と多Agent時の混雑を分けて確認する。
-- `SubtaskSeparated` とDirectional観測は実装済みだが、Unity実機確認と学習比較は未実施。
+- Scalarの`SubtaskSeparated`は実効16Agentで学習・推論済み。旧run名の`six`は誤記。
+  推論結果と条件は [16Agent実験記録](docs/experiments/subtask_separated_sixteen_agent_v1.md) を参照。
+  Directional観測のUnity実機確認とフェロモン方式間の統制比較は未実施。
+- 接触停止1秒・Agent接触罰-5の `STseparated_v2` はtrainer seed 1、2で学習し、
+  各モデル5試行の推論を完了。seed間差と安全性の追加検証中。詳細は
+  [新ルール16Agent実験記録](docs/experiments/subtask_separated_sixteen_agent_contact_stop_v2.md) を参照。
 - 6Agent推論は `_01`～`_03` の300秒試行を完了。初回中断した `_03` も2026-10-12に再実行済み。
 
 ## 最新結果 (Latest Results)
+
+### 接触停止ルール・16Agent・SubtaskSeparated
+
+`wh_middle2Gate_ST_16_v1_01`、`_02` は同じ `STseparated_v2` / `Middle_2Gate_v1` のハッシュで、
+各環境16Agent、trainer seed 1、2。決定的推論、1環境、300秒 x trial seed 1～5で評価した。
+平均完了数は235.2対256.0、平均Agent接触数は540.6対479.8。`_02` は5試行すべてで完了数が多いが、
+Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚接触は `_02` が多く、
+全接触の平均はほぼ同じ。学習seed2件だけでは安全性改善やフェロモン方式の効果を断定しない。
+詳細は [新ルール16Agent実験記録](docs/experiments/subtask_separated_sixteen_agent_contact_stop_v2.md)。
 
 ### フェロモンなし `None_v1`
 
@@ -186,14 +214,20 @@
   セル最大値が約1,899で狭い領域へ集中し、滞留を促す報酬ハックが疑われる。原因とは未確定。
   観察値と切り分け案は [6Agent・TaskSeparated実験](docs/experiments/task_separated_six_agent_v1.md) を参照。
 - 学習ではフェロモンがEpisodeをまたいで蓄積するが、推論試行はゼロ初期化するため、開始時分布が異なる。
-- `maxStepLimit` は50,000。失敗Episodeが長く、タイムアウト信号が疎になる可能性がある。
-- Agent同士の衝突は双方で数え得る。達成0時の「衝突/タスク」が0になる表示も不適切。
+- 旧Configの `maxStepLimit` は50,000で、失敗Episodeが長くタイムアウト信号が疎になる可能性がある。
+  `STseparated_v2` は15,000に短縮して学習済みだが、最適値は未検証。
+- 旧CSVのAgent衝突は双方で数え得る。新しいペア単位計測と安全停止はUnity実機で未検証。
+  達成0時の「衝突/タスク」が0になる表示も不適切。
 - 棚衝突の分離計測とCSV出力は1モデル x 1試行で実機確認済み。目的棚除外と継続接触の判定は
   回帰チェック済みだが、モデル間比較には同一条件での再テストが必要。
 - 同じモデルを再テストすると結果を上書きする。テストバッチ別保存と移動距離CSVは未実装。
 - 成功時のみ分泌、品質重み付け、拡散、衝突・混雑等の多チャネルは未実装。
 - 完全タスク単位ではマップ数が `入口 x 棚 x 出口` で増え、フェロモン蓄積が希薄になる懸念がある。
 - `Middle_2Gate_v1` の `presetId` は `environment_v1`、環境seedは0のまま。正式比較前に版付きIDへ直す。
+- Generatorの棚Collider有無・Layer・TagはConfig/Presetには含まれず、Inspector値として残る。
+  新しい学習JSONへの記録と自動テスト時の照合は実装したが、変更時は条件管理に注意が必要。
+- 現在Prefabが参照する `STseparated_v2` は `Middle_2Gate_v1` を指定する。
+  旧Config内の20x55・1列x3棚はこの条件では使用されない。正式学習前に選択Configを確認する。
 - 旧runは変更前Configの内容ハッシュを持つため、現在の1体Configとは一致しない。旧ONNXの確認には
   Manual Overrideが必要で、新しい正式runと混同しない。
 - ゲート全幅化により出口観測、距離短縮報酬、成功判定の意味が変わった。既存ONNXは動作確認には使えるが、
@@ -209,15 +243,19 @@
 
 ## 次タスク (Next Tasks)
 
-1. Unityメニューの20件版回帰チェックを実行し、`SubtaskSeparated + Directional + VectorField27` の
+1. Unityメニューの23件版回帰チェックを実行し、`SubtaskSeparated + Directional + VectorField27` の
    短時間学習/推論で観測数83、サブタスク分離、方向CSVを確認する。
-2. Agent数を1、2、4体と段階的に増やして、棚衝突、Agent衝突、
+2. 6Agentの`SubtaskSeparated`を正式に評価するなら、6体用の新Configとrun IDを作り、
+   Playerを再ビルドして学習し直す。既存の16体Configと旧runを上書きしない。
+3. Agent数を1、2、4体と段階的に増やして、棚衝突、Agent衝突、
    ゲート混雑、観測不足を切り分ける。Agent同士の衝突時に両者を終了・再生成する条件も比較候補とする。
-3. 衝突を主要評価に使う前に、Agent衝突の双方計上とゼロ達成時指標を修正する。
-4. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
-5. `pheromoneRewardScale = 0` と現行条件を比較し、異常挙動が報酬由来か切り分ける。
-6. 成功runのEpisode長を基準に、`maxStepLimit`短縮候補を決める。
-7. `None`、Scalarの`TaskSeparated`、Directionalの`SubtaskSeparated`を同一seed集合で比較する。
+4. 接触停止ルールの `STseparated_v2` は2学習seedで推論済み。Base側にも同じ停止秒数・接触罰・
+   壁罰・最大stepをそろえた新Configを用意し、同じseed集合で比較する。両者の実停止時間と
+   接触ペア件数は別途検証し、達成0時の「衝突/タスク」表示も直す。
+5. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
+6. `pheromoneRewardScale = 0` と現行条件を比較し、異常挙動が報酬由来か切り分ける。
+7. 成功runのEpisode長を基準に、`maxStepLimit`短縮候補を決める。
+8. `None`、Scalarの`TaskSeparated`、Directionalの`SubtaskSeparated`を同一seed集合で比較する。
 
 ## 検討中 (Ideas Under Consideration)
 
@@ -243,14 +281,21 @@
   手動設定モードでは従来の配置と `Auto Spawn Count` を維持する。
 - 不足AgentはManagerの `Agent Prefab` からのみ複製する。Prefab未設定時は別形状の代替個体を作らず起動を停止する。
 - 正式比較は版付きConfig/Presetを使い、既存Assetを上書きせずv2を作る。
+- 学習Sceneの保存済み倉庫は実効条件の出典としない。Config変更後はSceneの再生成ではなく
+  必要に応じて編集時プレビューを確認し、Playerを再ビルドする。旧Config値は互換性のため残す。
 - ONNXテストは学習記録からConfigを自動選択する。異なる条件はManual Overrideとして明示する。
 - checkpoint選択用validation seedと最終報告用test seedは分ける方針。
+- 学習済みrun IDはTrainer記録との対応のため改名せず、誤った名前は実験メモで実効条件を明示する。
+- 接触罰は連続接触につき両Agent各1回とし、停止の時間損失と通常の時間経過罰も残す。
+  固定の移動報酬は追加せず、既存の距離短縮報酬と完了報酬を使う。新規Configは1秒・-5、旧Configは0秒・-1。
 
 ## 最近変更した主要ファイル (Files Changed Recently)
 
-直近の主な更新: 6Agent推論の仮説を実験メモに記録し、研究・開発記録の共通運用を `RESEARCH_WORKFLOW.md` に明文化。
+直近の主な更新: Config準拠の編集時倉庫プレビュー、生成済み棚・ゲートの共有、実効レイアウトと棚Collider条件の記録・照合を追加。Experiment ConfigとEnvironment Presetの各Inspector項目に日本語ツールチップを追加。既存の接触ルールとConfig指紋は維持。
 
 - `Assets/Scripts/WarehouseExperimentConfig.cs`
+- `Assets/Scripts/WarehouseEnvironmentPreset.cs`
+- `Assets/Scripts/Warehousegenerator.cs`
 - `Assets/Scripts/WarehouseModelTestRunner.cs`
 - `Assets/Scripts/WarehousePheromoneFinalReport.cs`
 - `Assets/Scripts/WarehouseTrainingManager.cs`
@@ -263,16 +308,21 @@
 - `Assets/Prefab/Env ML.prefab`、`Assets/Scenes/ml test.unity`
 - `tr.py`、`tr.txt`、`EXPERIMENT_WORKFLOW.md`
 - `docs/experiments/task_separated_six_agent_v1.md`
+- `docs/experiments/subtask_separated_sixteen_agent_v1.md`
+- `docs/experiments/subtask_separated_sixteen_agent_contact_stop_v2.md`
 - `RESEARCH_WORKFLOW.md`、`AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
 
 確認済み: 棚衝突版のUnity回帰チェック17件、6Agent・300秒推論の `_01`～`_03` CSV保存、
-記録省略モード実装後のC#本体・Editorコードの警告0・エラー0ビルド。記録省略モードのUnity実機確認、20件版Unity回帰チェック、
-短時間推論、本番Player再ビルド、trainer接続、新仕様での実学習確認は未実施。
+今回のC#本体・Editorコードの警告0・エラー0ビルド。新ルール `STseparated_v2` で2runの学習記録と
+各5試行の推論CSVを確認済み。Configプレビューと起動時再生成の直接目視、更新版Unity回帰チェック、
+停止秒数の実測は未実施。
 
 ## 次回メモ (Notes for Next Session)
 
 - 作業開始時にこのファイル、学習・テスト前に `EXPERIMENT_WORKFLOW.md` を読む。
-- `_03` 再テストは完了。次回は20件版回帰チェックと、追加の5体も円柱Prefabで生成されることを目視確認する。
+- Unityで新しい編集時プレビューと保存済み倉庫の置換を確認する。Config選択中にInspector手動値が
+  保たれること、Console/JSONの実効棚数と見た目の棚数が一致することを確かめる。
+- `_03` 再テストは完了。次回は23件版回帰チェックと、追加の5体も円柱Prefabで生成されることを目視確認する。
 - HUDはGame View右側に1枚だけ表示されること、`E×S×X` / `E→S` / `S→X` の選択と床表示が一致すること、
   Agent行が増えたとき縦スクロールできることを確認する。
 - 現在の推論結果は旧中心点仕様の1体条件として保持する。正式比較はゲート全幅仕様で再学習して行う。

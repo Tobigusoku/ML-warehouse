@@ -181,8 +181,7 @@ public class WarehousePheromone : MonoBehaviour
         gridD = Mathf.CeilToInt(warehouseD / cellSize);
         cellCount = gridW * gridD;
 
-        // 入口数 (TrainingManager の CalculateEntrances と同じ順序)
-        entranceCount = CalcEntranceCount();
+        entranceCount = warehouseGenerator.GateCount;
         exitCount = entranceCount;
 
         // 棚収集 + マップ確保
@@ -201,20 +200,6 @@ public class WarehousePheromone : MonoBehaviour
     }
 
     // ==========================================
-    //  入口数計算 (TrainingManager.CalculateEntrances と同順)
-    // ==========================================
-    int CalcEntranceCount()
-    {
-        if (warehouseGenerator == null) return 1;
-        int count = 0;
-        if (warehouseGenerator.doorWest) count++;
-        if (warehouseGenerator.doorEast) count++;
-        if (warehouseGenerator.doorSouth) count++;
-        if (warehouseGenerator.doorNorth) count++;
-        return Mathf.Max(1, count);
-    }
-
-    // ==========================================
     //  棚収集 + マップ確保
     // ==========================================
     void CollectShelves()
@@ -222,7 +207,7 @@ public class WarehousePheromone : MonoBehaviour
         allShelves.Clear();
         shelfIndexMap.Clear();
 
-        allShelves.AddRange(warehouseGenerator.GetComponentsInChildren<ShelfUnit>());
+        allShelves.AddRange(warehouseGenerator.GeneratedShelves);
 
         for (int i = 0; i < allShelves.Count; i++)
         {

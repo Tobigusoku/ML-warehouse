@@ -74,7 +74,7 @@ environmentInstances[]:
 `environmentInstanceCount` と `effectiveAgentCount` を保存する。
 
 設定検証と試行リセットの回帰チェックはPlayしていない状態で、Unityメニューの
-`Warehouse > Checks > Experiment Startup` から実行できる。Consoleに `PASS: 20 checks` が出れば成功。
+`Warehouse > Checks > Experiment Startup` から実行できる。Consoleに `PASS: 23 checks` が出れば成功。
 
 帰還先は選択されたゲート中心の一点ではなく、ゲート全幅の線分である。出口観測、距離短縮報酬、
 成功判定はすべてAgent位置から線分上の最近傍点を使う。出口indexと完全タスク識別は従来どおりである。
@@ -136,6 +136,19 @@ Experiment Configには、フェロモンのマップ分割・セル内容・観
 Consoleには `Source: Inspector` と表示される。これは動作確認用であり、正式比較の設定として
 残す運用には向かない。
 
+### 倉庫の編集時プレビュー
+
+`WarehouseGenerator` の `倉庫を生成` は、Scene内の `Env ML` インスタンスで使う。
+`Use Experiment Config` がオンなら、選択したConfigの `Environment Preset` を優先し、
+未指定ならConfig内の旧環境値からプレビューする。生成後、Generatorの手動Inspector値は元に戻る。
+オフなら従来どおりGeneratorの手動値または手動 `Environment Preset` を使う。
+
+Prefab編集モードでは生成・削除ボタンは使えない。Prefab本体へ倉庫を保存しないためである。
+既にSceneへ保存された倉庫があっても、Play開始時に無効化してConfigから再生成する。
+**学習のためにSceneの倉庫を削除・再生成する必要はない。** プレビューは見た目確認用である。
+テストSceneで `Auto From Training Record` を使う場合、Play時のConfigは学習記録から選ばれる。
+編集時プレビューはGeneratorに現在指定されたConfigを使うため、テスト時と異なる可能性がある。
+
 ## 3. 正式な学習をUnity Editorで行う場合
 
 ### 3-1. Unity側の準備
@@ -145,6 +158,9 @@ Consoleには `Source: Inspector` と表示される。これは動作確認用�
 3. `Use Experiment Config` をオンにする。
 4. `Experiment Config` に、今回使うConfigアセットを割り当てる。
 5. `Experiment Run Id` に、今回の学習run IDを正確に入力する。
+
+見た目を確認したい場合だけ、各SceneインスタンスのGeneratorで `倉庫を生成` を押す。
+Consoleの実効レイアウト表示で、幅・奥行き・棚数・ゲート数を確認する。
 
 例:
 
@@ -204,8 +220,12 @@ Unity Editorを接続する手順とは別である。
 ### 4-1. 実行前の注意
 
 - 実験Configを割り当てた状態で、Unityから `App/ML-warehouse.exe` をビルドしておく。
+- ビルド前にTraining Sceneの保存済み倉庫を削除・再生成する必要はない。Playerは起動時に
+  Configの実効レイアウトで倉庫を作り直す。見た目確認だけ編集時プレビューを使う。
 - `tr.py` はビルド済みアプリを使うため、Editor上だけで変更したConfigを使う場合は再ビルドが
   必要。
+- 正式なConfigではEnvironment Preset欄とプレビューに出る出典・寸法を確認する。
+  Environment Presetが空なら旧Config内の環境値が使われ、Consoleにも警告が出る。
 - `tr.py` はrun IDを `MLAGENTS_RUN_ID`、プロジェクト直下のresults絶対パスを
   `WAREHOUSE_RESULTS_DIR` としてUnityアプリへ渡す。そのため、`unity_experiment.json` と
   ML-Agentsの出力は同じ `results/<run-id>/` に保存される。
@@ -298,8 +318,10 @@ ConfigとEnvironment Presetの内容ハッシュを照合する。
   テストを停止する。
 - 学習結果フォルダまたは `unity_experiment.json` がない古いモデルは、自動方式ではテスト
   できない。その場合は手動上書きを使う。
-- 古いJSONは現在のフィンガープリント形式を持たないため、アセットIDだけを照合して警告を出す。
+- 指紋バージョンを持たない古いJSONは、アセットIDだけを照合して警告を出す。
   学習時の設定値まで完全に検証したい比較実験では、新しい形式で学習し直す。
+- v2指紋の学習記録は旧フィールドで照合する。接触停止を有効にしたConfigは旧モデルへ
+  自動適用しない。v3の新しい学習記録には接触停止秒数も内容ハッシュに含まれる。
 - 同じConfig IDのアセットが複数あり、内容ハッシュでも一意に決められない場合は、誤った
   Configを適用せずテストを停止する。正式Configには一意なConfig IDを付ける。
 - 1回のテストバッチには、同じConfigで学習したモデルだけを入れる。異なるConfigのモデルが
@@ -383,7 +405,9 @@ results/<model-name>/
 
 - `logTest.csv` には1試行を1行として、試行番号、試行seed、達成タスク数、壁・棚・Agent別の衝突数、
   3種の合計、シミュレーション時間、実時間、単位時間あたりの達成数、1タスクあたりの衝突数、
-  停止理由を保存する。棚衝突は、配送中の目的棚への接触を除外し、目的外棚と帰還中の棚を数える。
+  停止理由、Agent接触なしで完了したタスク数を保存する。棚衝突は、配送中の目的棚への接触を除外し、
+  目的外棚と帰還中の棚を数える。新CSVの `agent_collisions` は同一ペアの継続接触を1件とする。
+  旧CSVでは両Agent側で数えた可能性があり、新CSVと件数を直接比較しない。
 - `logTest_summary.csv` には、その時点までに完了した試行について、壁・棚・Agent別衝突を含む
   主要指標の平均と母標準偏差を保存する。
 - CSVは各試行の終了ごとに更新するため、途中停止しても完了済み試行は残る。
@@ -416,6 +440,16 @@ results/<model-name>/
   安全タイムアウト、決定的推論のオン/オフ。
 
 方式だけを変える比較では、Configを複製してフェロモン方式に関わる項目だけを変える。
+
+Agent接触の新ルールを試す場合は、既存Configを上書きせず、Baseとフェロモン用に
+それぞれ新しいConfigアセットとIDを作る。`Create > Warehouse > Experiment Config` で
+**新規作成**したアセットの初期値は `Agent Count = 16`、`Agent Contact Stop Seconds = 1`、
+`Penalty Agent Collision = -5`（各Agent）である。既存Configを**複製**した場合は旧値
+`0`秒・`-1`もコピーされるので、接触ルールを変える実験ではこの2項目を確認する。
+停止中は行動が移動へ反映されず、押し合い継続罰は発生しない。
+`0` は旧ルールで、既存Configアセットはこの値のままにする。停止秒数と接触罰は比較前に
+短時間のUnity推論で確認し、決定後に新しい版のConfigでBase/フェロモン双方を再学習する。
+ONNXテストでは各runの学習記録からConfigを自動選択する。
 
 ## 7. よくある確認ポイント
 

@@ -40,8 +40,84 @@ public static class WarehouseStartupChecks
                     "Record contains process-local environment and agent totals");
                 Require(record.environmentInstances.Length == 2 &&
                     record.environmentInstances[0].effectiveAgentCount == 1, "Per-environment actual counts");
+                Require(record.environmentInstances[0].layoutRecordVersion == 1 &&
+                    record.environmentInstances[0].warehouseWidth == 31 &&
+                    record.environmentInstances[0].addShelfCollider,
+                    "Provenance records the effective layout and Generator collision settings");
                 WarehouseExperimentRuntime.ApplyToEnvironment(first);
                 Require(WarehouseExperimentRuntime.EnvironmentInstanceCount == 2, "Repeated apply is idempotent");
+            }, ref passed);
+
+            Check(() =>
+            {
+                var fresh = ScriptableObject.CreateInstance<WarehouseExperimentConfig>();
+                objects.Add(fresh);
+                Require(fresh.agentCount == 16 && Mathf.Approximately(fresh.penaltyAgentCollision, -5f) &&
+                    Mathf.Approximately(fresh.agentContactStopSeconds, 1f),
+                    "New configs default to 16 agents and the contact safety rule");
+                var config = Config(1);
+                string legacyHash = WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.LegacyConfigFingerprintVersion);
+                string currentHash = WarehouseExperimentRuntime.GetConfigContentHash(config);
+                config.agentContactStopSeconds = 0f;
+                Require(legacyHash == WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.LegacyConfigFingerprintVersion),
+                    "Legacy training records ignore the newly added contact rule field");
+                Require(currentHash != WarehouseExperimentRuntime.GetConfigContentHash(config),
+                    "New training records fingerprint the contact rule");
+                var agentObject = new GameObject("ContactConfigAgent");
+                objects.Add(agentObject);
+                var agent = agentObject.AddComponent<WarehouseRobotAgent>();
+                WarehouseExperimentRuntime.ApplyAgent(agent, fresh);
+                Require(Mathf.Approximately(agent.agentContactStopSeconds, 1f) &&
+                    Mathf.Approximately(agent.penaltyAgentCollision, -5f),
+                    "Preset contact stop reaches the agent");
+            }, ref passed);
+
+            Check(() =>
+            {
+                var config = Config(1);
+                var environment = ScriptableObject.CreateInstance<WarehouseEnvironmentPreset>();
+                objects.Add(environment);
+                environment.warehouseWidth = 42;
+                environment.warehouseDepth = 58;
+                environment.doorWest = true;
+                environment.doorEast = false;
+                environment.doorSouth = false;
+                environment.doorNorth = true;
+                config.environmentPreset = environment;
+
+                var g = Environment("LayoutSource", config, 1);
+                int manualWidth = g.warehouseWidth;
+                string manualValues = EditorJsonUtility.ToJson(g);
+                WarehouseExperimentRuntime.ApplyGeneratorLayout(g, config);
+                Require(g.warehouseWidth == 42 && g.warehouseDepth == 58 &&
+                    g.environmentPreset == environment, "Environment Preset takes priority for preview and Play");
+                var gates = g.GetGates(0.3f);
+                Require(g.GateCount == 2 && gates.Count == 2 &&
+                    Mathf.Approximately(gates[0].center.x, -environment.entrancePlatformDepth / 2f) &&
+                    Mathf.Approximately(gates[1].center.z, 58 + environment.entrancePlatformDepth / 2f),
+                    "Gate order and positions share one generator definition");
+                EditorJsonUtility.FromJsonOverwrite(manualValues, g);
+                Require(g.warehouseWidth == manualWidth && g.environmentPreset == null,
+                    "Preview restores manual Inspector values");
+
+                config.environmentPreset = null;
+                g.environmentPreset = environment;
+                WarehouseExperimentRuntime.ApplyGeneratorLayout(g, config);
+                Require(g.environmentPreset == null && g.warehouseWidth == config.warehouseWidth,
+                    "Legacy Config values cannot be shadowed by a stale manual preset");
+            }, ref passed);
+
+            Check(() =>
+            {
+                var g = Environment("SavedPreview", Config(1), 1);
+                var first = Child(g.gameObject, "Warehouse");
+                var second = Child(g.gameObject, "Warehouse");
+                var unrelated = Child(g.gameObject, "UserObject");
+                InvokeInstance(g, "CleanupExistingWarehouse");
+                Require(first == null && second == null && unrelated != null,
+                    "Saved preview roots are removed without touching other children");
             }, ref passed);
 
             Check(() =>
@@ -194,10 +270,13 @@ public static class WarehouseStartupChecks
                 agent.crashToWall = 3;
                 agent.crashToShelf = 5;
                 agent.crashToAgent = 2;
+                agent.agentContactPairCount = 1;
+                agent.collisionFreeCompletedCount = 3;
                 agent.totalMoveDistance = 99f;
                 agent.ResetEvaluationMetrics();
                 Require(agent.completedCount == 0 && agent.crashToWall == 0 &&
                     agent.crashToShelf == 0 && agent.crashToAgent == 0 &&
+                    agent.agentContactPairCount == 0 && agent.collisionFreeCompletedCount == 0 &&
                     Mathf.Approximately(agent.totalMoveDistance, 0f),
                     "Trial metrics reset together");
             }, ref passed);

@@ -102,6 +102,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
         public int targetCompletedTasks;
         public float targetDurationSeconds;
         public int completedTasks;
+        public int collisionFreeCompletedTasks;
         public int wallCollisions;
         public int shelfCollisions;
         public int agentCollisions;
@@ -425,6 +426,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
             }
 
             int completed = CompletedCount();
+            int collisionFreeCompleted = CollisionFreeCompletedCount();
             int wallCollisions = SumWallCollisions();
             int shelfCollisions = SumShelfCollisions();
             int agentCollisions = SumAgentCollisions();
@@ -440,6 +442,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
                 targetDurationSeconds = stopCondition == WarehouseTestStopCondition.FixedDuration
                     ? durationSecondsPerTrial : 0f,
                 completedTasks = completed,
+                collisionFreeCompletedTasks = collisionFreeCompleted,
                 wallCollisions = wallCollisions,
                 shelfCollisions = shelfCollisions,
                 agentCollisions = agentCollisions,
@@ -655,7 +658,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
             int hashMatchCount = 0;
             foreach (WarehouseExperimentConfig candidate in candidates)
             {
-                if (WarehouseExperimentRuntime.GetConfigContentHash(candidate) != provenance.presetContentHash)
+                if (WarehouseExperimentRuntime.GetConfigContentHash(candidate, provenance.configFingerprintVersion) != provenance.presetContentHash)
                     continue;
                 hashMatch = candidate;
                 hashMatchCount++;
@@ -682,7 +685,9 @@ public class WarehouseModelTestRunner : MonoBehaviour
     {
         if (HasSameConfig(config, provenance, out reason))
         {
-            if (provenance.configFingerprintVersion != WarehouseExperimentRuntime.ConfigFingerprintVersion)
+            if (!HasSameRecordedLayout(provenance, out reason)) return false;
+            if (provenance.configFingerprintVersion != WarehouseExperimentRuntime.ConfigFingerprintVersion &&
+                provenance.configFingerprintVersion != WarehouseExperimentRuntime.LegacyConfigFingerprintVersion)
             {
                 Debug.LogWarning("[ModelTestRunner] Training provenance uses an older config fingerprint format. " +
                                  "Preset identity was checked, but the training-time values cannot be verified completely.");
@@ -694,10 +699,40 @@ public class WarehouseModelTestRunner : MonoBehaviour
                                    reason.StartsWith("Environment preset content hash differs", StringComparison.Ordinal);
         if (isFingerprintMismatch && !failOnConfigFingerprintMismatch)
         {
-            Debug.LogWarning($"[ModelTestRunner] {reason} Continuing because Fail On Config Fingerprint Mismatch is disabled.");
+            string fingerprintReason = reason;
+            if (!HasSameRecordedLayout(provenance, out reason)) return false;
+            Debug.LogWarning($"[ModelTestRunner] {fingerprintReason} Continuing because Fail On Config Fingerprint Mismatch is disabled.");
             return true;
         }
         return false;
+    }
+
+    bool HasSameRecordedLayout(WarehouseExperimentProvenance provenance, out string reason)
+    {
+        reason = string.Empty;
+        WarehouseGenerator generator = GetComponentInChildren<WarehouseGenerator>(true);
+        if (generator == null || provenance.environmentInstances == null) return true;
+        foreach (WarehouseEnvironmentInstanceRecord record in provenance.environmentInstances)
+        {
+            if (record == null || record.layoutRecordVersion == 0) continue;
+            if (record.addShelfCollider != generator.addShelfCollider ||
+                record.shelfColliderLayer != generator.shelfColliderLayer ||
+                record.shelfColliderTag != generator.shelfColliderTag)
+            {
+                reason = "Generator shelf collision settings differ from training. Use Manual Override for an intentional change.";
+                return false;
+            }
+            if (WarehouseExperimentRuntime.IsReady && generator.isGenerated &&
+                (record.warehouseWidth != generator.warehouseWidth ||
+                 record.warehouseDepth != generator.warehouseDepth ||
+                 record.generatedShelfCount != generator.GeneratedShelves.Count ||
+                 record.gateCount != generator.GateCount))
+            {
+                reason = "Generated warehouse layout differs from training. Check the Config and Environment Preset.";
+                return false;
+            }
+        }
+        return true;
     }
 
     bool HasSameConfig(WarehouseExperimentConfig config, WarehouseExperimentProvenance provenance, out string reason)
@@ -716,6 +751,13 @@ public class WarehouseModelTestRunner : MonoBehaviour
         if (!provenance.usePreset)
         {
             reason = "Training used Inspector settings instead of a preset.";
+            return false;
+        }
+
+        if (provenance.configFingerprintVersion == WarehouseExperimentRuntime.LegacyConfigFingerprintVersion &&
+            config.agentContactStopSeconds > 0f)
+        {
+            reason = "Training used the legacy contact rule, but the test config enables an Agent contact safety stop.";
             return false;
         }
 
@@ -739,10 +781,11 @@ public class WarehouseModelTestRunner : MonoBehaviour
             return false;
         }
 
-        if (provenance.configFingerprintVersion == WarehouseExperimentRuntime.ConfigFingerprintVersion &&
+        if ((provenance.configFingerprintVersion == WarehouseExperimentRuntime.ConfigFingerprintVersion ||
+             provenance.configFingerprintVersion == WarehouseExperimentRuntime.LegacyConfigFingerprintVersion) &&
             !string.IsNullOrEmpty(provenance.presetContentHash))
         {
-            string currentHash = WarehouseExperimentRuntime.GetConfigContentHash(config);
+            string currentHash = WarehouseExperimentRuntime.GetConfigContentHash(config, provenance.configFingerprintVersion);
             if (currentHash != provenance.presetContentHash)
             {
                 reason = $"Preset content hash differs (training={provenance.presetContentHash}, test={currentHash}).";
@@ -874,7 +917,15 @@ public class WarehouseModelTestRunner : MonoBehaviour
     {
         int total = 0;
         foreach (WarehouseRobotAgent agent in agents)
-            if (agent != null) total += agent.crashToAgent;
+            if (agent != null) total += agent.agentContactPairCount;
+        return total;
+    }
+
+    int CollisionFreeCompletedCount()
+    {
+        int total = 0;
+        foreach (WarehouseRobotAgent agent in agents)
+            if (agent != null) total += agent.collisionFreeCompletedCount;
         return total;
     }
 
@@ -890,7 +941,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
     {
         var c = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
-        sb.AppendLine("model,trial,trial_seed,stop_condition,target_completed_tasks,target_duration_seconds,completed_tasks,wall_collisions,shelf_collisions,agent_collisions,total_collisions,simulation_steps,simulation_seconds,wall_seconds,tasks_per_simulation_minute,collisions_per_task,stop_reason");
+        sb.AppendLine("model,trial,trial_seed,stop_condition,target_completed_tasks,target_duration_seconds,completed_tasks,wall_collisions,shelf_collisions,agent_collisions,total_collisions,simulation_steps,simulation_seconds,wall_seconds,tasks_per_simulation_minute,collisions_per_task,stop_reason,collision_free_completed_tasks");
         foreach (TrialResult result in results)
         {
             sb.Append(EscapeCsv(result.model)).Append(',')
@@ -909,7 +960,8 @@ public class WarehouseModelTestRunner : MonoBehaviour
               .Append(result.wallSeconds.ToString("F3", c)).Append(',')
               .Append(result.tasksPerSimulationMinute.ToString("F6", c)).Append(',')
               .Append(result.collisionsPerTask.ToString("F6", c)).Append(',')
-              .Append(result.stopReason).AppendLine();
+              .Append(result.stopReason).Append(',')
+              .Append(result.collisionFreeCompletedTasks).AppendLine();
         }
         return sb.ToString();
     }
@@ -918,7 +970,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
     {
         var c = CultureInfo.InvariantCulture;
         var sb = new StringBuilder();
-        sb.AppendLine("model,trials,stop_condition,mean_completed_tasks,std_completed_tasks,mean_simulation_seconds,std_simulation_seconds,mean_wall_collisions,std_wall_collisions,mean_shelf_collisions,std_shelf_collisions,mean_agent_collisions,std_agent_collisions,mean_total_collisions,std_total_collisions,mean_tasks_per_simulation_minute,std_tasks_per_simulation_minute,mean_collisions_per_task,std_collisions_per_task");
+        sb.AppendLine("model,trials,stop_condition,mean_completed_tasks,std_completed_tasks,mean_simulation_seconds,std_simulation_seconds,mean_wall_collisions,std_wall_collisions,mean_shelf_collisions,std_shelf_collisions,mean_agent_collisions,std_agent_collisions,mean_total_collisions,std_total_collisions,mean_tasks_per_simulation_minute,std_tasks_per_simulation_minute,mean_collisions_per_task,std_collisions_per_task,mean_collision_free_completed_tasks,std_collision_free_completed_tasks");
         if (results.Count == 0)
             return sb.ToString();
 
@@ -930,6 +982,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
         float meanCollisions = Mean(results, result => result.totalCollisions);
         float meanThroughput = Mean(results, result => result.tasksPerSimulationMinute);
         float meanCollisionsPerTask = Mean(results, result => result.collisionsPerTask);
+        float meanCollisionFreeCompleted = Mean(results, result => result.collisionFreeCompletedTasks);
         TrialResult first = results[0];
 
         sb.Append(EscapeCsv(first.model)).Append(',')
@@ -950,7 +1003,9 @@ public class WarehouseModelTestRunner : MonoBehaviour
           .Append(meanThroughput.ToString("F6", c)).Append(',')
           .Append(PopulationStandardDeviation(results, result => result.tasksPerSimulationMinute, meanThroughput).ToString("F6", c)).Append(',')
           .Append(meanCollisionsPerTask.ToString("F6", c)).Append(',')
-          .Append(PopulationStandardDeviation(results, result => result.collisionsPerTask, meanCollisionsPerTask).ToString("F6", c)).AppendLine();
+          .Append(PopulationStandardDeviation(results, result => result.collisionsPerTask, meanCollisionsPerTask).ToString("F6", c)).Append(',')
+          .Append(meanCollisionFreeCompleted.ToString("F6", c)).Append(',')
+          .Append(PopulationStandardDeviation(results, result => result.collisionFreeCompletedTasks, meanCollisionFreeCompleted).ToString("F6", c)).AppendLine();
         return sb.ToString();
     }
 

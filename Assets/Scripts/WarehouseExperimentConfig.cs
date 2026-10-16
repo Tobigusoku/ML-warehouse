@@ -56,6 +56,15 @@ public class WarehouseEnvironmentInstanceRecord
     public string environmentPath;
     public int configuredAgentCount;
     public int effectiveAgentCount;
+    public int layoutRecordVersion;
+    public string layoutSource;
+    public int warehouseWidth;
+    public int warehouseDepth;
+    public int generatedShelfCount;
+    public int gateCount;
+    public bool addShelfCollider;
+    public string shelfColliderLayer;
+    public string shelfColliderTag;
 }
 
 /// <summary>
@@ -66,91 +75,159 @@ public class WarehouseEnvironmentInstanceRecord
 public class WarehouseExperimentConfig : ScriptableObject
 {
     [Header("Identity")]
+    [Tooltip("実験設定を識別するID。比較条件やバージョンが変わる場合は新しいIDとアセットを作成します。")]
     public string configId = "experiment_v1";
 
     [Header("Pheromone")]
+    [Tooltip("マップの共有範囲。None=使用しない、Shared=全タスク共通、TaskSeparated=入口×棚×出口、SubtaskSeparated=入口→棚と棚→出口を別マップにします。")]
     public WarehousePheromoneMode pheromoneMode = WarehousePheromoneMode.TaskSeparated;
+    [Tooltip("セルに蓄積する情報。Scalar=通過量、Directional=通過量と移動方向。Directionalではフェロモン報酬はありません。")]
     public WarehousePheromoneContent pheromoneContent = WarehousePheromoneContent.Scalar;
-    [Tooltip("LegacyScalar9 preserves existing 65-value ONNX inputs. VectorField27 uses strength and local direction for each of the nine cells (83 total observations).")]
+    [Tooltip("Agentへ渡すフェロモン観測。LegacyScalar9=周囲9セルの強度（全65値）、VectorField27=各セルの強度とAgent基準の方向（全83値）。ONNXの入力形式と一致させてください。")]
     public WarehousePheromoneObservationFormat pheromoneObservationFormat =
         WarehousePheromoneObservationFormat.LegacyScalar9;
+    [Tooltip("Agentがセルを通過した際のフェロモン分泌量。")]
     public float pheromoneSecretionAmount = 1f;
+    [Tooltip("蒸発処理1回あたりに減る割合。0=蒸発なし、1=全量消去。")]
     [Range(0f, 1f)] public float pheromoneEvaporationRate = 0.05f;
+    [Tooltip("蒸発処理の間隔（FixedUpdate回数）。0以下では蒸発しません。")]
     public int pheromoneEvaporationInterval = 100;
+    [Tooltip("フェロモン値の下限。")]
     public float pheromoneMinValue = 0f;
+    [Tooltip("フェロモン値の上限。蓄積時にこの値を超えないよう制限します。")]
     public float pheromoneMaxValue = 1000000f;
+    [Tooltip("Scalar時のフェロモン報酬倍率。Directional時は報酬を与えません。")]
     public float pheromoneRewardScale = 0.0002f;
+    [Tooltip("フェロモンマップの1セルの幅（m）。小さいほどマップが細かくなります。")]
     public float pheromoneCellSize = 2f;
+    [Tooltip("Directional時、これ未満の移動距離は方向の分泌に使いません（m）。")]
     [Min(0f)] public float directionalMovementThreshold = 0.01f;
+    [Tooltip("VectorField27の強度観測を正規化するときの基準上限。フェロモン値の蓄積上限とは別です。")]
     [Min(0.001f)] public float pheromoneObservationNormalizationMax = 1000f;
 
     [Header("Environment preset")]
-    [Tooltip("Preferred versioned layout asset. When assigned, it takes priority over the legacy fields below.")]
+    [Tooltip("倉庫形状を定義するEnvironment Preset。指定すると下の旧形式の倉庫設定より優先されます。")]
     public WarehouseEnvironmentPreset environmentPreset;
 
     [Header("Legacy environment values")]
-    [Tooltip("Kept for compatibility with existing config assets. New configs should use Environment Preset.")]
+    [Tooltip("旧形式の倉庫プリセット。Environment Preset指定時は使われません。新規実験ではEnvironment Presetを使用してください。")]
     public WarehousePreset warehousePreset = WarehousePreset.Custom;
+    [Tooltip("旧項目: 倉庫の横幅（X方向、m）。Environment Preset指定時は使われません。")]
     public int warehouseWidth = 20;
+    [Tooltip("旧項目: 倉庫の奥行き（Z方向、m）。Environment Preset指定時は使われません。")]
     public int warehouseDepth = 55;
+    [Tooltip("旧項目: 壁の高さ（m）。Environment Preset指定時は使われません。")]
     public float wallHeight = 5f;
+    [Tooltip("旧項目: 棚の列数。Environment Preset指定時は使われません。")]
     public int shelfRows = 1;
+    [Tooltip("旧項目: 1列あたりの棚数。Environment Preset指定時は使われません。")]
     public int shelvesPerRow = 3;
+    [Tooltip("旧項目: 棚の幅（Z方向、m）。Environment Preset指定時は使われません。")]
     public float shelfWidth = 8f;
+    [Tooltip("旧項目: 棚の高さ（m）。Environment Preset指定時は使われません。")]
     public float shelfHeight = 3f;
+    [Tooltip("旧項目: 棚の奥行き（X方向、m）。Environment Preset指定時は使われません。")]
     public float shelfDepth = 1.2f;
+    [Tooltip("旧項目: 棚の列間の通路幅（m）。Environment Preset指定時は使われません。")]
     public float aisleWidth = 15f;
+    [Tooltip("旧項目: 背中合わせの棚の間隔（m）。Environment Preset指定時は使われません。")]
     public float shelfSpacing = 1f;
+    [Tooltip("旧項目: 同じ列の棚同士のZ方向の隙間（m）。Environment Preset指定時は使われません。")]
     public float shelfLateralGap = 10f;
+    [Tooltip("旧項目: 棚を背中合わせの2列セットにするか。Environment Preset指定時は使われません。")]
     public bool shelfPaired = false;
+    [Tooltip("旧項目: 棚の荷物を生成する確率（0～1）。Environment Preset指定時は使われません。")]
     public float crateSpawnChance = 0f;
+    [Tooltip("旧項目: 床にパレットを生成する確率（0～1）。Environment Preset指定時は使われません。")]
     public float palletSpawnChance = 0f;
+    [Tooltip("旧項目: ゲートの幅（m）。Environment Preset指定時は使われません。")]
     public float doorWidth = 20f;
+    [Tooltip("旧項目: ゲートの高さ（m）。Environment Preset指定時は使われません。")]
     public float doorHeight = 3.5f;
+    [Tooltip("旧項目: 西側にゲートを作るか。Environment Preset指定時は使われません。")]
     public bool doorWest = false;
+    [Tooltip("旧項目: 東側にゲートを作るか。Environment Preset指定時は使われません。")]
     public bool doorEast = false;
+    [Tooltip("旧項目: 南側にゲートを作るか。Environment Preset指定時は使われません。")]
     public bool doorSouth = true;
+    [Tooltip("旧項目: 北側にゲートを作るか。Environment Preset指定時は使われません。")]
     public bool doorNorth = true;
+    [Tooltip("旧項目: ゲート外側のプラットフォームの奥行き（m）。Environment Preset指定時は使われません。")]
     public float entrancePlatformDepth = 5f;
+    [Tooltip("旧項目: 柱を生成するか。Environment Preset指定時は使われません。")]
     public bool generatePillars = false;
+    [Tooltip("旧項目: 柱の太さ（m）。Environment Preset指定時は使われません。")]
     public float pillarSize = 0.4f;
+    [Tooltip("旧項目: 柱のX方向の配置間隔（m）。Environment Preset指定時は使われません。")]
     public float pillarSpacingX = 8f;
+    [Tooltip("旧項目: 柱のZ方向の配置間隔（m）。Environment Preset指定時は使われません。")]
     public float pillarSpacingZ = 8f;
+    [Tooltip("旧項目: 柱を壁から離す距離（m）。Environment Preset指定時は使われません。")]
     public float pillarWallMargin = 2f;
+    [Tooltip("旧項目: 棚と重なる柱を生成しないか。Environment Preset指定時は使われません。")]
     public bool pillarAvoidShelves = true;
+    [Tooltip("旧項目: 棚と柱の間に確保する余裕（m）。Environment Preset指定時は使われません。")]
     public float pillarShelfClearance = 0.5f;
+    [Tooltip("旧項目: 倉庫生成用のUnity乱数シード。0=毎回変動。Environment Preset指定時は使われません。Trainerのseedとは別です。")]
     public int environmentSeed = 0;
 
     [Header("Agents and assignment")]
     [Min(1)]
-    [Tooltip("Runtime agent count per warehouse environment. With this config enabled, missing agents are spawned and excess placed agents are disabled for the play session.")]
+    [Tooltip("1倉庫環境あたりのAgent数。Play時に不足分を複製し、余分な配置Agentを無効化します。")]
     public int agentCount = 16;
+    [Tooltip("タスク割り当て時、複数Agentが同じ棚を選ばないようにする。棚数不足時は重複する場合があります。")]
     public bool avoidDuplicateShelves = true;
+    [Tooltip("ゲート上のAgentスポーン位置の間隔（m）。")]
     public float slotSpacing = 1.5f;
 
     [Header("Agent movement and rewards")]
+    [Tooltip("Agentの移動加速度。大きいほど早く加速します。")]
     public float moveAccel = 30f;
+    [Tooltip("Agentの最高移動速度（m/s）。")]
     public float maxSpeed = 5f;
+    [Tooltip("Agentの最大旋回速度（度/s）。")]
     public float turnSpeed = 150f;
+    [Tooltip("AgentのRigidbodyの質量。")]
     public float robotMass = 10f;
+    [Tooltip("Agentの直線移動にかかる抵抗（Rigidbody.drag）。")]
     public float robotDrag = 1f;
+    [Tooltip("Agentの回転にかかる抵抗（Rigidbody.angularDrag）。")]
     public float robotAngularDrag = 5f;
+    [Tooltip("障害物を調べるRaycast観測の最大距離（m）。")]
     public float rayDistance = 10f;
+    [Tooltip("Raycast観測距離に加える相対ノイズの割合。0=ノイズなし。")]
     public float rayNoise = 0f;
+    [Tooltip("配送中、棚のアクセス位置に到達したとみなす距離（m）。")]
     public float dropRange = 1.5f;
+    [Tooltip("帰還中、選択した出口ゲートの線分に到達したとみなす距離（m）。")]
     public float exitRange = 1.5f;
+    [Tooltip("棚への到達判定で、棚の裏側からのアクセスも許可するか。")]
     public bool allowBackAccess = true;
+    [Tooltip("対象の棚に荷物を置いたときの報酬。")]
     public float rewardDropAtShelf = 50f;
+    [Tooltip("選択した出口ゲートへ帰還し、搬送を完了したときの報酬。")]
     public float rewardExitComplete = 100f;
+    [Tooltip("壁に衝突した際のペナルティ。通常は負の値を指定します。")]
     public float penaltyWallHit = -1f;
+    [Tooltip("壁に押し付け続けたとき、各ステップで与えるペナルティ。")]
     public float penaltyWallStay = -0.1f;
-    public float penaltyAgentCollision = -1f;
+    [Tooltip("Agent同士の接触1回につき、双方に与えるペナルティ。接触継続中は重複計上しません。")]
+    public float penaltyAgentCollision = -5f;
+    [Tooltip("Agentと押し合い続けたときの毎ステップ罰。接触停止時間が0の従来ルールで使用します。")]
     public float penaltyAgentStay = -0.1f;
+    [Tooltip("Agent同士が接触したとき、双方を安全停止させるシミュレーション秒数。0=停止なしの従来ルール。")]
+    [Min(0f)] public float agentContactStopSeconds = 1f;
+    [Tooltip("Agentの行動ステップごとに与える時間経過ペナルティ。")]
     public float penaltyTimeStep = -0.001f;
+    [Tooltip("Agentが床から落下したときのペナルティ。")]
     public float penaltyFall = -1f;
+    [Tooltip("棚への過去最短距離を1m更新するごとの報酬倍率。0以下で無効。")]
     public float shelfApproachReward = 1f;
+    [Tooltip("出口ゲートへの過去最短距離を1m更新するごとの報酬倍率。0以下で無効。")]
     public float exitApproachReward = 1f;
+    [Tooltip("1エピソードの最大Agentステップ数。超えるとタイムアウトとして終了します。")]
     public int maxStepLimit = 50000;
+    [Tooltip("最大ステップ数に達してタイムアウトしたときのペナルティ。")]
     public float penaltyTimeout = -100f;
 }
 
@@ -159,7 +236,8 @@ public class WarehouseExperimentConfig : ScriptableObject
 /// </summary>
 public static class WarehouseExperimentRuntime
 {
-    public const string ConfigFingerprintVersion = "public-fields-v2";
+    public const string ConfigFingerprintVersion = "public-fields-v3";
+    public const string LegacyConfigFingerprintVersion = "public-fields-v2";
     private static readonly Dictionary<WarehouseGenerator, WarehouseTrainingManager> environments =
         new Dictionary<WarehouseGenerator, WarehouseTrainingManager>();
     private static readonly HashSet<WarehouseTrainingManager> readyManagers = new HashSet<WarehouseTrainingManager>();
@@ -198,6 +276,12 @@ public static class WarehouseExperimentRuntime
         return GetPublicFieldContentHash(config);
     }
 
+    public static string GetConfigContentHash(WarehouseExperimentConfig config, string version)
+    {
+        return GetPublicFieldContentHash(config, version == LegacyConfigFingerprintVersion
+            ? nameof(WarehouseExperimentConfig.agentContactStopSeconds) : null);
+    }
+
     public static string GetEnvironmentPresetAssetGuid(WarehouseEnvironmentPreset preset)
     {
 #if UNITY_EDITOR
@@ -214,7 +298,7 @@ public static class WarehouseExperimentRuntime
         return GetPublicFieldContentHash(preset);
     }
 
-    static string GetPublicFieldContentHash(object target)
+    static string GetPublicFieldContentHash(object target, string excludedField = null)
     {
         if (target == null) return string.Empty;
 
@@ -223,6 +307,7 @@ public static class WarehouseExperimentRuntime
         var content = new StringBuilder();
         foreach (FieldInfo field in fields)
         {
+            if (field.Name == excludedField) continue;
             // Unity object references have instance-specific serialization. Their identity and
             // content are recorded separately in the provenance JSON.
             if (typeof(UnityEngine.Object).IsAssignableFrom(field.FieldType)) continue;
@@ -286,6 +371,9 @@ public static class WarehouseExperimentRuntime
                 throw new InvalidOperationException($"{g.name}: Use Experiment Config is enabled but Experiment Config is empty.");
             if (GetRunId(g) != GetRunId(first))
                 throw new InvalidOperationException($"{g.name}: parallel environments have different experiment run IDs.");
+            if (activeUsePreset && (g.addShelfCollider != first.addShelfCollider ||
+                g.shelfColliderLayer != first.shelfColliderLayer || g.shelfColliderTag != first.shelfColliderTag))
+                throw new InvalidOperationException($"{g.name}: parallel environments have different shelf collision settings on their Generators.");
 
             Transform root = GetEnvironmentRoot(g);
             var managers = root.GetComponentsInChildren<WarehouseTrainingManager>(true);
@@ -310,7 +398,7 @@ public static class WarehouseExperimentRuntime
             WarehouseTrainingManager manager = entry.Value;
             if (g.useExperimentConfig)
             {
-                ApplyGenerator(g, g.experimentConfig);
+                ApplyGeneratorLayout(g, g.experimentConfig);
                 ApplyManager(manager, g.experimentConfig);
                 ApplyPheromone(manager.GetComponent<WarehousePheromone>(), g.experimentConfig);
             }
@@ -413,14 +501,39 @@ public static class WarehouseExperimentRuntime
     {
         var records = new List<WarehouseEnvironmentInstanceRecord>();
         foreach (var entry in environments)
+        {
+            WarehouseGenerator g = entry.Key;
             records.Add(new WarehouseEnvironmentInstanceRecord
             {
-                environmentPath = GetEnvironmentPath(GetEnvironmentRoot(entry.Key)),
+                environmentPath = GetEnvironmentPath(GetEnvironmentRoot(g)),
                 configuredAgentCount = entry.Value.configuredAgentCount,
-                effectiveAgentCount = entry.Value.robotAgents.Count
+                effectiveAgentCount = entry.Value.robotAgents.Count,
+                layoutRecordVersion = 1,
+                layoutSource = GetLayoutSource(g),
+                warehouseWidth = g.warehouseWidth,
+                warehouseDepth = g.warehouseDepth,
+                generatedShelfCount = g.GeneratedShelves.Count,
+                gateCount = g.GateCount,
+                addShelfCollider = g.addShelfCollider,
+                shelfColliderLayer = g.shelfColliderLayer,
+                shelfColliderTag = g.shelfColliderTag
             });
+        }
         records.Sort((a, b) => string.CompareOrdinal(a.environmentPath, b.environmentPath));
         return records.ToArray();
+    }
+
+    static string GetLayoutSource(WarehouseGenerator g)
+    {
+        if (g.useExperimentConfig && g.experimentConfig != null)
+        {
+            var c = g.experimentConfig;
+            return c.environmentPreset != null ? "EnvironmentPreset:" + c.environmentPreset.name :
+                c.warehousePreset != WarehousePreset.Custom ? "LegacyCodePreset:" + c.warehousePreset :
+                "LegacyConfigValues";
+        }
+        return g.environmentPreset != null ? "ManualEnvironmentPreset:" + g.environmentPreset.name :
+            g.preset != WarehousePreset.Custom ? "ManualCodePreset:" + g.preset : "Inspector";
     }
 
     public static void ApplyAgent(WarehouseRobotAgent agent, WarehouseExperimentConfig config)
@@ -443,6 +556,7 @@ public static class WarehouseExperimentRuntime
         agent.penaltyWallStay = config.penaltyWallStay;
         agent.penaltyAgentCollision = config.penaltyAgentCollision;
         agent.penaltyAgentStay = config.penaltyAgentStay;
+        agent.agentContactStopSeconds = config.agentContactStopSeconds;
         agent.penaltyTimeStep = config.penaltyTimeStep;
         agent.penaltyFall = config.penaltyFall;
         agent.shelfApproachReward = config.shelfApproachReward;
@@ -452,14 +566,17 @@ public static class WarehouseExperimentRuntime
         agent.ConfigurePheromoneObservationFormat(config.pheromoneObservationFormat);
     }
 
-    static void ApplyGenerator(WarehouseGenerator g, WarehouseExperimentConfig c)
+    public static void ApplyGeneratorLayout(WarehouseGenerator g, WarehouseExperimentConfig c)
     {
+        if (g == null || c == null)
+            throw new ArgumentNullException(g == null ? nameof(g) : nameof(c));
         if (c.environmentPreset != null)
         {
             g.ApplyEnvironmentPreset(c.environmentPreset);
             return;
         }
 
+        g.environmentPreset = null;
         g.preset = c.warehousePreset;
         g.warehouseWidth = c.warehouseWidth;
         g.warehouseDepth = c.warehouseDepth;
@@ -530,6 +647,9 @@ public static class WarehouseExperimentRuntime
         float evap = c != null ? c.pheromoneEvaporationRate : (p != null ? p.evapRate : 0f);
         float q = c != null ? c.pheromoneSecretionAmount : (p != null ? p.pheroQ : 0f);
         int count = c != null ? c.agentCount : (m != null ? m.robotAgents.Count : 0);
+        WarehouseRobotAgent sampleAgent = m != null && m.robotAgents.Count > 0 ? m.robotAgents[0] : null;
+        float contactStop = c != null ? c.agentContactStopSeconds : (sampleAgent != null ? sampleAgent.agentContactStopSeconds : 0f);
+        float contactPenalty = c != null ? c.penaltyAgentCollision : (sampleAgent != null ? sampleAgent.penaltyAgentCollision : 0f);
         WarehouseEnvironmentPreset environment = c != null ? c.environmentPreset : (g != null ? g.environmentPreset : null);
         Debug.Log("Experiment Config\n" +
                   $"ID: {id}\n" +
@@ -541,11 +661,18 @@ public static class WarehouseExperimentRuntime
                   $"Pheromone Observations: {observations}\n" +
                   $"Evaporation Rate: {evap.ToString(CultureInfo.InvariantCulture)}\n" +
                   $"Secretion Amount: {q.ToString(CultureInfo.InvariantCulture)}\n" +
+                   $"Agent Contact Stop Seconds: {contactStop.ToString(CultureInfo.InvariantCulture)}\n" +
+                   $"Agent Contact Penalty per Agent: {contactPenalty.ToString(CultureInfo.InvariantCulture)}\n" +
                   $"Configured Agent Count per Environment: {count}\n" +
                   $"Environment Instances (this Unity process): {environments.Count}\n" +
                   $"Environment Preset: {(environment != null ? environment.name + " (" + environment.presetId + ")" : "Inspector / legacy values")}");
+        if (preset && c != null && c.environmentPreset == null)
+            Debug.LogWarning("[ExperimentConfig] No Environment Preset is assigned. The Config's legacy environment fields define the generated warehouse.");
         foreach (var instance in GetInstanceRecords())
-            Debug.Log($"[ExperimentConfig] {instance.environmentPath}: effective agents={instance.effectiveAgentCount}");
+            Debug.Log($"[ExperimentConfig] {instance.environmentPath}: layout={instance.layoutSource}, " +
+                      $"size={instance.warehouseWidth}x{instance.warehouseDepth}, shelves={instance.generatedShelfCount}, " +
+                      $"gates={instance.gateCount}, agents={instance.effectiveAgentCount}, " +
+                      $"shelfCollider={instance.addShelfCollider}, layer={instance.shelfColliderLayer}, tag={instance.shelfColliderTag}");
     }
 
     static void Record(WarehouseGenerator g, WarehouseExperimentConfig c, bool preset)

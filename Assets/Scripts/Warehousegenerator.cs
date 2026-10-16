@@ -9,6 +9,14 @@ using System.Collections.Generic;
 [DefaultExecutionOrder(-1000)]
 public class WarehouseGenerator : MonoBehaviour
 {
+    public struct WarehouseGateInfo
+    {
+        public Vector3 center;
+        public Vector3 spreadDir;
+        public float halfWidth;
+        public float spawnHalfWidth;
+    }
+
     [Header("===== Experiment config =====")]
     [Tooltip("Use a WarehouseExperimentConfig instead of the Inspector values.")]
     public bool useExperimentConfig = false;
@@ -153,6 +161,10 @@ public class WarehouseGenerator : MonoBehaviour
     private Transform shelfParent;
     private Transform crateParent;
     private Transform pillarParent;
+    private readonly List<ShelfUnit> generatedShelves = new List<ShelfUnit>();
+    private int generatedWidth;
+    private int generatedDepth;
+    private float generatedWallHeight;
 
     // 引っかかり防止用の共有PhysicMaterial
     private PhysicMaterial smoothPhysMat;
@@ -167,14 +179,7 @@ public class WarehouseGenerator : MonoBehaviour
     {
         if (!enabled || WarehouseExperimentRuntime.Failed) return;
         WarehouseExperimentRuntime.ApplyToEnvironment(this);
-        if (!useExperimentConfig && environmentPreset != null)
-            ApplyEnvironmentPreset(environmentPreset);
-
-        if (!isGenerated)
-        {
-            CleanupExistingWarehouse();
-            Generate();
-        }
+        Generate();
     }
 
     /// <summary>
@@ -183,22 +188,65 @@ public class WarehouseGenerator : MonoBehaviour
     /// </summary>
     void CleanupExistingWarehouse()
     {
-        // warehouseParent 経由で消せる場合
-        if (warehouseParent != null)
-        {
-            SafeDestroy(warehouseParent.gameObject);
-            warehouseParent = null;
-        }
-
-        // 名前検索で残っている Warehouse を全て消す (二重保険)
+        // Saved scene previews are legacy roots. Disable them immediately because
+        // Destroy() does not remove objects until the end of the frame in Play Mode.
         for (int i = transform.childCount - 1; i >= 0; i--)
         {
             Transform child = transform.GetChild(i);
-            if (child.name == "Warehouse")
+            if (child == warehouseParent || child.name == "Warehouse")
             {
+                child.gameObject.SetActive(false);
                 SafeDestroy(child.gameObject);
             }
         }
+        warehouseParent = null;
+    }
+
+    public IReadOnlyList<ShelfUnit> GeneratedShelves => generatedShelves;
+
+    public int GateCount
+    {
+        get
+        {
+            int count = (doorWest ? 1 : 0) + (doorEast ? 1 : 0) +
+                        (doorSouth ? 1 : 0) + (doorNorth ? 1 : 0);
+            return Mathf.Max(1, count);
+        }
+    }
+
+    public List<WarehouseGateInfo> GetGates(float robotCenterY)
+    {
+        var gates = new List<WarehouseGateInfo>(GateCount);
+        float offset = entrancePlatformDepth / 2f;
+        float halfWidth = Mathf.Max(0f, doorWidth / 2f);
+        float spawnHalfWidth = Mathf.Max(0f, halfWidth - 0.5f);
+        if (doorWest)
+            gates.Add(MakeGate(new Vector3(-offset, robotCenterY, warehouseDepth / 2f),
+                Vector3.forward, halfWidth, spawnHalfWidth));
+        if (doorEast)
+            gates.Add(MakeGate(new Vector3(warehouseWidth + offset, robotCenterY, warehouseDepth / 2f),
+                Vector3.forward, halfWidth, spawnHalfWidth));
+        if (doorSouth)
+            gates.Add(MakeGate(new Vector3(warehouseWidth / 2f, robotCenterY, -offset),
+                Vector3.right, halfWidth, spawnHalfWidth));
+        if (doorNorth)
+            gates.Add(MakeGate(new Vector3(warehouseWidth / 2f, robotCenterY, warehouseDepth + offset),
+                Vector3.right, halfWidth, spawnHalfWidth));
+        if (gates.Count == 0)
+            gates.Add(MakeGate(new Vector3(-offset, robotCenterY, warehouseDepth / 2f),
+                Vector3.forward, halfWidth, spawnHalfWidth));
+        return gates;
+    }
+
+    WarehouseGateInfo MakeGate(Vector3 localCenter, Vector3 localSpread,
+                               float halfWidth, float spawnHalfWidth)
+    {
+        return new WarehouseGateInfo {
+            center = transform.TransformPoint(localCenter),
+            spreadDir = transform.TransformDirection(localSpread),
+            halfWidth = halfWidth,
+            spawnHalfWidth = spawnHalfWidth
+        };
     }
 
     // ==========================================
@@ -361,6 +409,7 @@ public class WarehouseGenerator : MonoBehaviour
     /// </summary>
     public void Generate()
     {
+        isGenerated = false;
         if (!useExperimentConfig && environmentPreset != null)
             ApplyEnvironmentPreset(environmentPreset);
 
@@ -370,6 +419,7 @@ public class WarehouseGenerator : MonoBehaviour
 
         // 既存の倉庫を確実に破棄 (名前検索で漏れなく)
         CleanupExistingWarehouse();
+        generatedShelves.Clear();
 
         // シード設定
         if (seed != 0)
@@ -399,7 +449,10 @@ public class WarehouseGenerator : MonoBehaviour
         GenerateShelves();
         GenerateScatteredPallets();
 
-        Debug.Log($"[WarehouseGenerator] 倉庫生成完了: {warehouseWidth}x{warehouseDepth}m");
+        generatedWidth = warehouseWidth;
+        generatedDepth = warehouseDepth;
+        generatedWallHeight = wallHeight;
+        Debug.Log($"[WarehouseGenerator] 倉庫生成完了: {warehouseWidth}x{warehouseDepth}m, 棚 {generatedShelves.Count}, ゲート {GateCount}");
         isGenerated = true;
     }
 
@@ -871,6 +924,7 @@ public class WarehouseGenerator : MonoBehaviour
 
         // ===== ShelfUnit スクリプトをアタッチ =====
         var shelfScript = shelfGo.AddComponent<ShelfUnit>();
+        generatedShelves.Add(shelfScript);
         shelfScript.shelfID = $"R{row}-C{col}-S{side}";
         shelfScript.rowIndex = row;
         shelfScript.columnIndex = col;
@@ -1095,9 +1149,12 @@ public class WarehouseGenerator : MonoBehaviour
     void OnDrawGizmosSelected()
     {
         Gizmos.color = new Color(0, 1, 0, 0.3f);
-        Vector3 localCenter = new Vector3(warehouseWidth / 2f, wallHeight / 2f, warehouseDepth / 2f);
+        float width = isGenerated ? generatedWidth : warehouseWidth;
+        float depth = isGenerated ? generatedDepth : warehouseDepth;
+        float height = isGenerated ? generatedWallHeight : wallHeight;
+        Vector3 localCenter = new Vector3(width / 2f, height / 2f, depth / 2f);
         Vector3 worldCenter = transform.TransformPoint(localCenter);
-        Vector3 size = new Vector3(warehouseWidth, wallHeight, warehouseDepth);
+        Vector3 size = new Vector3(width, height, depth);
         Gizmos.DrawWireCube(worldCenter, size);
     }
 
@@ -1135,6 +1192,7 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
         UnityEditor.EditorGUILayout.Space(5);
         UnityEditor.EditorGUILayout.BeginVertical("box");
         GUILayout.Label("Environment Preset", UnityEditor.EditorStyles.boldLabel);
+        UnityEditor.EditorGUI.BeginDisabledGroup(generator.useExperimentConfig);
         UnityEditor.EditorGUI.BeginChangeCheck();
         var newEnvironmentPreset = (WarehouseEnvironmentPreset)UnityEditor.EditorGUILayout.ObjectField(
             "Environment Preset", generator.environmentPreset, typeof(WarehouseEnvironmentPreset), false);
@@ -1147,16 +1205,19 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
             UnityEditor.EditorUtility.SetDirty(generator);
         }
 
-        GUI.enabled = generator.environmentPreset != null;
+        GUI.enabled = generator.environmentPreset != null && !generator.useExperimentConfig;
         if (GUILayout.Button("Apply Environment Preset", GUILayout.Height(24)))
         {
             UnityEditor.Undo.RecordObject(generator, "Apply Warehouse Environment Preset");
             generator.ApplyEnvironmentPreset();
             UnityEditor.EditorUtility.SetDirty(generator);
         }
-        GUI.enabled = true;
+        GUI.enabled = !generator.useExperimentConfig;
+        UnityEditor.EditorGUI.EndDisabledGroup();
         UnityEditor.EditorGUILayout.HelpBox(
-            "A linked asset is reapplied when the environment is generated. Clear it to use the raw Inspector values manually.",
+            generator.useExperimentConfig
+                ? "Experiment Config controls the layout. This manual preset is ignored while Use Experiment Config is enabled."
+                : "A linked asset is reapplied when the environment is generated. Clear it to use the raw Inspector values manually.",
             UnityEditor.MessageType.None);
         UnityEditor.EditorGUILayout.EndVertical();
 
@@ -1167,6 +1228,7 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
         GUI.backgroundColor = new Color(0.85f, 0.95f, 1f);
         UnityEditor.EditorGUILayout.BeginVertical("box");
         GUI.backgroundColor = Color.white;
+        UnityEditor.EditorGUI.BeginDisabledGroup(generator.useExperimentConfig);
 
         GUILayout.Label("基準値プリセット", UnityEditor.EditorStyles.boldLabel);
 
@@ -1188,14 +1250,14 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
         // プリセット適用ボタン
         UnityEditor.EditorGUILayout.BeginHorizontal();
 
-        GUI.enabled = generator.preset != WarehousePreset.Custom;
+        GUI.enabled = generator.preset != WarehousePreset.Custom && !generator.useExperimentConfig;
         if (GUILayout.Button("プリセットを適用", GUILayout.Height(28)))
         {
             UnityEditor.Undo.RecordObject(generator, "Apply Warehouse Preset");
             generator.ApplyPreset();
             UnityEditor.EditorUtility.SetDirty(generator);
         }
-        GUI.enabled = true;
+        GUI.enabled = !generator.useExperimentConfig;
 
         if (GUILayout.Button("現在値をCustomに", GUILayout.Height(28), GUILayout.Width(130)))
         {
@@ -1213,6 +1275,7 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
             DrawPresetTable();
         }
 
+        UnityEditor.EditorGUI.EndDisabledGroup();
         UnityEditor.EditorGUILayout.EndVertical();
 
         // ==========================================
@@ -1222,25 +1285,79 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
         DrawPropertiesExcluding(serializedObject, "m_Script", "preset", "environmentPreset");
         serializedObject.ApplyModifiedProperties();
 
+        if (generator.useExperimentConfig)
+        {
+            var config = generator.experimentConfig;
+            if (config == null)
+                UnityEditor.EditorGUILayout.HelpBox("Use Experiment Config is enabled, but no Experiment Config is assigned.",
+                    UnityEditor.MessageType.Error);
+            else
+            {
+                var environment = config.environmentPreset;
+                var fixedPreset = environment == null ? WarehousePresetData.Get(config.warehousePreset) : null;
+                int width = environment != null ? environment.warehouseWidth :
+                    fixedPreset != null ? fixedPreset.warehouseWidth : config.warehouseWidth;
+                int depth = environment != null ? environment.warehouseDepth :
+                    fixedPreset != null ? fixedPreset.warehouseDepth : config.warehouseDepth;
+                string source = environment != null ? environment.name :
+                    fixedPreset != null ? config.warehousePreset.ToString() : "Legacy Config values";
+                UnityEditor.EditorGUILayout.HelpBox(
+                    $"Effective preview layout: {source} ({width} x {depth} m). Play and builds regenerate this layout from the Config.",
+                    environment != null ? UnityEditor.MessageType.Info : UnityEditor.MessageType.Warning);
+            }
+        }
+        var testRunner = generator.GetComponentInParent<WarehouseModelTestRunner>();
+        if (testRunner != null && testRunner.isTestMode &&
+            testRunner.configSource == WarehouseTestConfigSource.AutoFromTrainingRecord)
+            UnityEditor.EditorGUILayout.HelpBox(
+                "The Test Runner selects the training Config at Play startup. This edit-time preview uses the Generator's currently assigned Config, which may differ.",
+                UnityEditor.MessageType.Warning);
+
         // ==========================================
         //  生成ボタンエリア
         // ==========================================
         UnityEditor.EditorGUILayout.Space(10);
 
+        var prefabStage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+        bool inPrefabAsset = UnityEditor.PrefabUtility.IsPartOfPrefabAsset(generator.gameObject) ||
+            (prefabStage != null && generator.gameObject.scene == prefabStage.scene);
+        if (inPrefabAsset)
+            UnityEditor.EditorGUILayout.HelpBox(
+                "Preview a Scene instance instead. Saving generated Warehouse objects in the Env ML Prefab duplicates them across instances.",
+                UnityEditor.MessageType.Warning);
         GUI.backgroundColor = new Color(0.3f, 0.9f, 0.4f);
+        UnityEditor.EditorGUI.BeginDisabledGroup(inPrefabAsset ||
+            (generator.useExperimentConfig && generator.experimentConfig == null));
         if (GUILayout.Button("倉庫を生成", GUILayout.Height(35)))
         {
-            generator.Generate();
+            if (!Application.isPlaying && generator.useExperimentConfig)
+            {
+                string inspectorValues = UnityEditor.EditorJsonUtility.ToJson(generator);
+                try
+                {
+                    WarehouseExperimentRuntime.ApplyGeneratorLayout(generator, generator.experimentConfig);
+                    generator.Generate();
+                }
+                finally
+                {
+                    UnityEditor.EditorJsonUtility.FromJsonOverwrite(inspectorValues, generator);
+                    serializedObject.Update();
+                }
+            }
+            else generator.Generate();
         }
+        UnityEditor.EditorGUI.EndDisabledGroup();
         GUI.backgroundColor = Color.white;
 
         GUI.backgroundColor = new Color(1f, 0.7f, 0.7f);
+        UnityEditor.EditorGUI.BeginDisabledGroup(inPrefabAsset);
         if (GUILayout.Button("倉庫を削除", GUILayout.Height(25)))
         {
             var existing = generator.transform.Find("Warehouse");
             if (existing != null)
                 DestroyImmediate(existing.gameObject);
         }
+        UnityEditor.EditorGUI.EndDisabledGroup();
         GUI.backgroundColor = Color.white;
 
         // プリセット自動検出
