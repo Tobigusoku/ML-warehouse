@@ -269,7 +269,6 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 - `VectorField27` は観測数が83へ変わるため、65入力の既存ONNXとは互換性がなく再学習が必要。
 - `FrontDynamic19` も観測数131/149へ変わるため新規学習が必要。前方のみを観測するので、
   後退中の障害物や他Agentは見えない。接触回避の有効性は未検証。
-- 現在の `App/ML-warehouse.exe` は新Ray観測のコード変更より古い。v4学習前にUnity Playerを再ビルドする。
 - 2026-10-09の `_03` 初回推論中、Unity Editorが `RenderTexture.Create failed: width & height must be larger than 0` と
   `Graphics.SetRenderTarget called with bad depth RenderBuffer` を大量出力した。スタックは `UnityEditor.SceneView.DoOnGUI`
   のみで倉庫コードを含まず、Scene Viewのレイアウトサイズ0が原因とみられる。手動停止後は出力も停止。
@@ -361,7 +360,10 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 - Unityで新しい編集時プレビューと保存済み倉庫の置換を確認する。Config選択中にInspector手動値が
   保たれること、Console/JSONの実効棚数と見た目の棚数が一致することを確かめる。
 - `_03` 再テストは完了。次回は24件版回帰チェックと、追加Agentも円柱Prefabで生成されることを目視確認する。
-- v4学習前にPlayerを再ビルドし、起動ログの `Obstacle Observations: FrontDynamic19`、
+- v4用Playerは2026-10-21に再ビルド済み。exe本体の日時は古いままだが、
+  `App/ML-warehouse_Data/Managed/Assembly-CSharp.dll` とSceneデータは更新済みで、
+  DLL内に `FrontDynamic19` / `WarehouseRayObservationFormat` の型名がある。
+- v4学習開始時に起動ログの `Obstacle Observations: FrontDynamic19`、
   実効16Agent、`Middle_2Gate_v2` を確認する。完了後はv3と同じ300秒 x 5試行で評価する。
 - HUDはGame View右側に1枚だけ表示されること、`E×S×X` / `E→S` / `S→X` の選択と床表示が一致すること、
   Agent行が増えたとき縦スクロールできることを確認する。
