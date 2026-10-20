@@ -1188,6 +1188,9 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
     {
         var generator = (WarehouseGenerator)target;
         serializedObject.Update();
+        var prefabStage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+        bool inPrefabAsset = UnityEditor.PrefabUtility.IsPartOfPrefabAsset(generator.gameObject) ||
+            (prefabStage != null && generator.gameObject.scene == prefabStage.scene);
 
         UnityEditor.EditorGUILayout.Space(5);
         UnityEditor.EditorGUILayout.BeginVertical("box");
@@ -1214,10 +1217,20 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
         }
         GUI.enabled = !generator.useExperimentConfig;
         UnityEditor.EditorGUI.EndDisabledGroup();
+        UnityEditor.EditorGUI.BeginDisabledGroup(Application.isPlaying || inPrefabAsset || generator.useExperimentConfig);
+        if (GUILayout.Button(new GUIContent("現在値を新規Environment Presetとして保存",
+                "GeneratorのInspector値から新しい倉庫設定アセットを作ります。既存アセットは上書きしません。"),
+                GUILayout.Height(24)))
+        {
+            serializedObject.ApplyModifiedProperties();
+            SaveEnvironmentPreset(generator);
+            serializedObject.Update();
+        }
+        UnityEditor.EditorGUI.EndDisabledGroup();
         UnityEditor.EditorGUILayout.HelpBox(
             generator.useExperimentConfig
-                ? "Experiment Config controls the layout. This manual preset is ignored while Use Experiment Config is enabled."
-                : "A linked asset is reapplied when the environment is generated. Clear it to use the raw Inspector values manually.",
+                ? "Experiment Configが倉庫形状を決めます。手動値を保存するにはUse Experiment Configをオフにしてください。"
+                : "保存するのはGeneratorのInspector値です。既存Presetを指定中は生成時にその値へ戻るため、手動調整前に指定を外してください。",
             UnityEditor.MessageType.None);
         UnityEditor.EditorGUILayout.EndVertical();
 
@@ -1318,9 +1331,6 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
         // ==========================================
         UnityEditor.EditorGUILayout.Space(10);
 
-        var prefabStage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
-        bool inPrefabAsset = UnityEditor.PrefabUtility.IsPartOfPrefabAsset(generator.gameObject) ||
-            (prefabStage != null && generator.gameObject.scene == prefabStage.scene);
         if (inPrefabAsset)
             UnityEditor.EditorGUILayout.HelpBox(
                 "Preview a Scene instance instead. Saving generated Warehouse objects in the Env ML Prefab duplicates them across instances.",
@@ -1370,6 +1380,75 @@ public class WarehouseGeneratorEditor : UnityEditor.Editor
                 : $"最も近いプリセット: {detected}";
             UnityEditor.EditorUtility.DisplayDialog("プリセット検出", msg, "OK");
         }
+    }
+
+    private static void SaveEnvironmentPreset(WarehouseGenerator generator)
+    {
+        const string presetDirectory = "Assets/ExperimentConfigs/Experiments";
+        string directory = UnityEditor.AssetDatabase.IsValidFolder(presetDirectory) ? presetDirectory : "Assets";
+        string name = generator.environmentPreset != null
+            ? generator.environmentPreset.name + "_new" : "WarehouseEnvironment_v1";
+        string path = UnityEditor.EditorUtility.SaveFilePanelInProject(
+            "倉庫設定を新規保存", name, "asset", "新しいEnvironment Presetの名前と保存先を選んでください。", directory);
+        if (string.IsNullOrEmpty(path)) return;
+        if (UnityEditor.AssetDatabase.LoadMainAssetAtPath(path) != null || System.IO.File.Exists(path))
+        {
+            UnityEditor.EditorUtility.DisplayDialog(
+                "保存できません", "既存のアセットは上書きしません。新しい名前を指定してください。", "OK");
+            return;
+        }
+
+        string presetId = System.IO.Path.GetFileNameWithoutExtension(path);
+        foreach (string guid in UnityEditor.AssetDatabase.FindAssets("t:WarehouseEnvironmentPreset"))
+        {
+            string existingPath = UnityEditor.AssetDatabase.GUIDToAssetPath(guid);
+            var existing = UnityEditor.AssetDatabase.LoadAssetAtPath<WarehouseEnvironmentPreset>(existingPath);
+            if (existing == null || existing.presetId != presetId) continue;
+            UnityEditor.EditorUtility.DisplayDialog(
+                "保存できません", $"Preset ID '{presetId}' は既に使われています。別の名前を指定してください。", "OK");
+            return;
+        }
+
+        var preset = ScriptableObject.CreateInstance<WarehouseEnvironmentPreset>();
+        preset.presetId = presetId;
+        preset.warehouseWidth = generator.warehouseWidth;
+        preset.warehouseDepth = generator.warehouseDepth;
+        preset.wallHeight = generator.wallHeight;
+        preset.shelfRows = generator.shelfRows;
+        preset.shelvesPerRow = generator.shelvesPerRow;
+        preset.shelfWidth = generator.shelfWidth;
+        preset.shelfHeight = generator.shelfHeight;
+        preset.shelfDepth = generator.shelfDepth;
+        preset.aisleWidth = generator.aisleWidth;
+        preset.shelfSpacing = generator.shelfSpacing;
+        preset.shelfLateralGap = generator.shelfLateralGap;
+        preset.shelfPaired = generator.shelfPaired;
+        preset.crateSpawnChance = generator.crateSpawnChance;
+        preset.palletSpawnChance = generator.palletSpawnChance;
+        preset.doorWidth = generator.doorWidth;
+        preset.doorHeight = generator.doorHeight;
+        preset.doorWest = generator.doorWest;
+        preset.doorEast = generator.doorEast;
+        preset.doorSouth = generator.doorSouth;
+        preset.doorNorth = generator.doorNorth;
+        preset.entrancePlatformDepth = generator.entrancePlatformDepth;
+        preset.generatePillars = generator.generatePillars;
+        preset.pillarSize = generator.pillarSize;
+        preset.pillarSpacingX = generator.pillarSpacingX;
+        preset.pillarSpacingZ = generator.pillarSpacingZ;
+        preset.pillarWallMargin = generator.pillarWallMargin;
+        preset.pillarAvoidShelves = generator.pillarAvoidShelves;
+        preset.pillarShelfClearance = generator.pillarShelfClearance;
+        preset.environmentSeed = generator.seed;
+
+        UnityEditor.AssetDatabase.CreateAsset(preset, path);
+        UnityEditor.AssetDatabase.SaveAssets();
+        UnityEditor.Undo.RecordObject(generator, "Link New Warehouse Environment Preset");
+        generator.environmentPreset = preset;
+        generator.preset = WarehousePreset.Custom;
+        UnityEditor.EditorUtility.SetDirty(generator);
+        UnityEditor.PrefabUtility.RecordPrefabInstancePropertyModifications(generator);
+        UnityEditor.EditorGUIUtility.PingObject(preset);
     }
 
     // ==========================================

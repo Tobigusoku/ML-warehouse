@@ -28,6 +28,12 @@ public enum WarehousePheromoneObservationFormat
     VectorField27 = 1
 }
 
+public enum WarehouseRayObservationFormat
+{
+    LegacyRay12 = 0,
+    FrontDynamic19 = 1
+}
+
 [Serializable]
 public class WarehouseExperimentProvenance
 {
@@ -83,7 +89,7 @@ public class WarehouseExperimentConfig : ScriptableObject
     public WarehousePheromoneMode pheromoneMode = WarehousePheromoneMode.TaskSeparated;
     [Tooltip("セルに蓄積する情報。Scalar=通過量、Directional=通過量と移動方向。Directionalではフェロモン報酬はありません。")]
     public WarehousePheromoneContent pheromoneContent = WarehousePheromoneContent.Scalar;
-    [Tooltip("Agentへ渡すフェロモン観測。LegacyScalar9=周囲9セルの強度（全65値）、VectorField27=各セルの強度とAgent基準の方向（全83値）。ONNXの入力形式と一致させてください。")]
+    [Tooltip("Agentへ渡すフェロモン観測。LegacyScalar9=周囲9セルの強度、VectorField27=各セルの強度とAgent基準の方向。障害物観測方式と組み合わせた入力数をONNXと一致させてください。")]
     public WarehousePheromoneObservationFormat pheromoneObservationFormat =
         WarehousePheromoneObservationFormat.LegacyScalar9;
     [Tooltip("Agentがセルを通過した際のフェロモン分泌量。")]
@@ -193,10 +199,12 @@ public class WarehouseExperimentConfig : ScriptableObject
     public float robotDrag = 1f;
     [Tooltip("Agentの回転にかかる抵抗（Rigidbody.angularDrag）。")]
     public float robotAngularDrag = 5f;
-    [Tooltip("障害物を調べるRaycast観測の最大距離（m）。")]
+    [Tooltip("Raycast/SphereCastによる障害物観測の最大距離（m）。")]
     public float rayDistance = 10f;
-    [Tooltip("Raycast観測距離に加える相対ノイズの割合。0=ノイズなし。")]
+    [Tooltip("障害物観測距離に加える相対ノイズの割合。0=ノイズなし。")]
     public float rayNoise = 0f;
+    [Tooltip("周囲12方向の従来Ray観測、または前方180度を10度間隔で調べ、他Agentの相対速度も渡す19方向のSphereCast観測。後者は観測数が変わるため新しいONNXの学習が必要です。")]
+    public WarehouseRayObservationFormat rayObservationFormat = WarehouseRayObservationFormat.LegacyRay12;
     [Tooltip("配送中、棚のアクセス位置に到達したとみなす距離（m）。")]
     public float dropRange = 1.5f;
     [Tooltip("帰還中、選択した出口ゲートの線分に到達したとみなす距離（m）。")]
@@ -236,7 +244,8 @@ public class WarehouseExperimentConfig : ScriptableObject
 /// </summary>
 public static class WarehouseExperimentRuntime
 {
-    public const string ConfigFingerprintVersion = "public-fields-v3";
+    public const string ConfigFingerprintVersion = "public-fields-v4";
+    public const string PreviousConfigFingerprintVersion = "public-fields-v3";
     public const string LegacyConfigFingerprintVersion = "public-fields-v2";
     private static readonly Dictionary<WarehouseGenerator, WarehouseTrainingManager> environments =
         new Dictionary<WarehouseGenerator, WarehouseTrainingManager>();
@@ -278,8 +287,11 @@ public static class WarehouseExperimentRuntime
 
     public static string GetConfigContentHash(WarehouseExperimentConfig config, string version)
     {
-        return GetPublicFieldContentHash(config, version == LegacyConfigFingerprintVersion
-            ? nameof(WarehouseExperimentConfig.agentContactStopSeconds) : null);
+        if (version == LegacyConfigFingerprintVersion)
+            return GetPublicFieldContentHash(config, nameof(WarehouseExperimentConfig.agentContactStopSeconds),
+                nameof(WarehouseExperimentConfig.rayObservationFormat));
+        return GetPublicFieldContentHash(config, version == PreviousConfigFingerprintVersion
+            ? nameof(WarehouseExperimentConfig.rayObservationFormat) : null);
     }
 
     public static string GetEnvironmentPresetAssetGuid(WarehouseEnvironmentPreset preset)
@@ -298,7 +310,7 @@ public static class WarehouseExperimentRuntime
         return GetPublicFieldContentHash(preset);
     }
 
-    static string GetPublicFieldContentHash(object target, string excludedField = null)
+    static string GetPublicFieldContentHash(object target, string excludedField = null, string secondExcludedField = null)
     {
         if (target == null) return string.Empty;
 
@@ -307,7 +319,7 @@ public static class WarehouseExperimentRuntime
         var content = new StringBuilder();
         foreach (FieldInfo field in fields)
         {
-            if (field.Name == excludedField) continue;
+            if (field.Name == excludedField || field.Name == secondExcludedField) continue;
             // Unity object references have instance-specific serialization. Their identity and
             // content are recorded separately in the provenance JSON.
             if (typeof(UnityEngine.Object).IsAssignableFrom(field.FieldType)) continue;
@@ -547,6 +559,7 @@ public static class WarehouseExperimentRuntime
         agent.robotAngularDrag = config.robotAngularDrag;
         agent.rayDistance = config.rayDistance;
         agent.rayNoise = config.rayNoise;
+        agent.ConfigureRayObservationFormat(config.rayObservationFormat);
         agent.dropRange = config.dropRange;
         agent.exitRange = config.exitRange;
         agent.allowBackAccess = config.allowBackAccess;
@@ -644,6 +657,8 @@ public static class WarehouseExperimentRuntime
         string mode = c != null ? c.pheromoneMode.ToString() : (p != null ? p.pheromoneMode.ToString() : "Inspector");
         string content = c != null ? c.pheromoneContent.ToString() : (p != null ? p.pheromoneContent.ToString() : "Inspector");
         string observations = c != null ? c.pheromoneObservationFormat.ToString() : (p != null ? p.observationFormat.ToString() : "Inspector");
+        string rayObservations = c != null ? c.rayObservationFormat.ToString() :
+            (m != null && m.robotAgents.Count > 0 ? m.robotAgents[0].rayObservationFormat.ToString() : "Inspector");
         float evap = c != null ? c.pheromoneEvaporationRate : (p != null ? p.evapRate : 0f);
         float q = c != null ? c.pheromoneSecretionAmount : (p != null ? p.pheroQ : 0f);
         int count = c != null ? c.agentCount : (m != null ? m.robotAgents.Count : 0);
@@ -659,6 +674,7 @@ public static class WarehouseExperimentRuntime
                   $"Pheromone Mode: {mode}\n" +
                   $"Pheromone Content: {content}\n" +
                   $"Pheromone Observations: {observations}\n" +
+                  $"Obstacle Observations: {rayObservations}\n" +
                   $"Evaporation Rate: {evap.ToString(CultureInfo.InvariantCulture)}\n" +
                   $"Secretion Amount: {q.ToString(CultureInfo.InvariantCulture)}\n" +
                    $"Agent Contact Stop Seconds: {contactStop.ToString(CultureInfo.InvariantCulture)}\n" +

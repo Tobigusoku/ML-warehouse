@@ -50,8 +50,9 @@ mlagents-learn --help
   新しい正式runでは不一致停止を有効に戻し、現在のConfigから学習とテストを行う。
   学習済みConfigを上書きしてエラーを回避しない。
 - 配置済みAgentが不足している場合は、`Agent Prefab` をConfigのAgent数まで複製する。
-  Mesh、Collider、Behavior、DecisionRequester、追加コンポーネントはPrefabを引き継ぐ。観測数はConfigに従い、
-  `LegacyScalar9` なら65、`VectorField27` なら83になる。
+  Mesh、Collider、Behavior、DecisionRequester、追加コンポーネントはPrefabを引き継ぐ。
+  `LegacyRay12` ではフェロモン観測が `LegacyScalar9` なら65次元、`VectorField27` なら83次元。
+  `FrontDynamic19` ではそれぞれ131次元、149次元になる。
   `Agent Prefab` が未指定のまま自動生成が必要な場合は起動を停止する。
   手動設定モードでは既存の `Auto Spawn Count` を使う。
 - 全環境の初期化・数の検証が完了してからConsoleとJSONへ実数を記録する。
@@ -118,6 +119,10 @@ Experiment Configには、フェロモンのマップ分割・セル内容・観
 - セル内容は `Scalar` または `Directional`。Directionalは実移動方向を蓄積・蒸発し、フェロモン報酬を与えない。
 - 既存ONNXを使うConfigは `LegacyScalar9` のままにする。`VectorField27` は観測数83になるため、
   そのConfigで新しく学習したONNXだけを使用する。
+- 障害物観測の `Ray Observation Format` は旧runでは `LegacyRay12` のままにする。
+  `FrontDynamic19` は前方180度を10度間隔の19本のSphereCastで調べ、各方向に
+  距離、棚/壁/Agent判定、他Agentの相対速度X/Zを入力する。後退操作は可能なままだが、後方は観測しない。
+  新方式では入力数が変わるため、既存Configを複製して新しいIDを付け、Playerを再ビルドして学習し直す。
 - 値を変える時は既存Assetを上書きせず、`TaskSeparated_v2` のように新しいAssetを作る。
 
 ## 2. 日常の動作確認をする場合
@@ -148,6 +153,22 @@ Prefab編集モードでは生成・削除ボタンは使えない。Prefab本�
 **学習のためにSceneの倉庫を削除・再生成する必要はない。** プレビューは見た目確認用である。
 テストSceneで `Auto From Training Record` を使う場合、Play時のConfigは学習記録から選ばれる。
 編集時プレビューはGeneratorに現在指定されたConfigを使うため、テスト時と異なる可能性がある。
+
+### Generatorの現在値から環境Presetを作る
+
+1. Scene内の `WarehouseGenerator` で `Use Experiment Config` をオフにし、手動の
+   `Environment Preset` を外す。`プリセット選択` は `Custom` にする。
+2. GeneratorのInspector値を調整し、`倉庫を生成` で見た目を確認する。
+3. `現在値を新規Environment Presetとして保存` を押し、
+   `Assets/ExperimentConfigs/Experiments/` に新しい版名で保存する。
+   `Preset Id` には保存したアセットのファイル名が入る。既存アセットや既存IDは上書きしない。
+4. 保存したPresetはGeneratorの手動 `Environment Preset` に設定される。
+   正式学習には、新しい `WarehouseExperimentConfig` アセットを作り、その
+   `Environment Preset` に保存したアセットを指定する。既存の学習済みConfigは編集しない。
+
+このボタンは倉庫の形状・棚・ゲート・障害物・柱・環境seedを保存する。
+Agent数・報酬・フェロモン・Generatorの棚Collider設定は保存対象外。
+Play中、Prefab編集モード、または `Use Experiment Config` がオンの間は保存できない。
 
 ## 3. 正式な学習をUnity Editorで行う場合
 
@@ -321,7 +342,8 @@ ConfigとEnvironment Presetの内容ハッシュを照合する。
 - 指紋バージョンを持たない古いJSONは、アセットIDだけを照合して警告を出す。
   学習時の設定値まで完全に検証したい比較実験では、新しい形式で学習し直す。
 - v2指紋の学習記録は旧フィールドで照合する。接触停止を有効にしたConfigは旧モデルへ
-  自動適用しない。v3の新しい学習記録には接触停止秒数も内容ハッシュに含まれる。
+  自動適用しない。v3指紋は接触停止秒数を含む。v4指紋はRay観測方式も含む。
+  v2/v3の旧学習モデルに `FrontDynamic19` を自動適用しない。
 - 同じConfig IDのアセットが複数あり、内容ハッシュでも一意に決められない場合は、誤った
   Configを適用せずテストを停止する。正式Configには一意なConfig IDを付ける。
 - 1回のテストバッチには、同じConfigで学習したモデルだけを入れる。異なるConfigのモデルが

@@ -137,7 +137,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   useExperimentConfig: 1
-  experimentConfig: {fileID: 11400000, guid: 833ea74fbc2302d419fa77433c2136a2, type: 2}
+  experimentConfig: {fileID: 11400000, guid: 94ad81e8f9e72e14e997b887ac14f6d3, type: 2}
   experimentRunId: 
   environmentPreset: {fileID: 0}
   preset: 0
@@ -227,8 +227,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   models: []
-  trialsPerModel: 1
-  stopCondition: 0
+  trialsPerModel: 5
+  stopCondition: 1
   completedTasksPerTrial: 100
   durationSecondsPerTrial: 300
   safetyTimeoutSecondsPerTrial: 300

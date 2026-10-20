@@ -687,6 +687,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
         {
             if (!HasSameRecordedLayout(provenance, out reason)) return false;
             if (provenance.configFingerprintVersion != WarehouseExperimentRuntime.ConfigFingerprintVersion &&
+                provenance.configFingerprintVersion != WarehouseExperimentRuntime.PreviousConfigFingerprintVersion &&
                 provenance.configFingerprintVersion != WarehouseExperimentRuntime.LegacyConfigFingerprintVersion)
             {
                 Debug.LogWarning("[ModelTestRunner] Training provenance uses an older config fingerprint format. " +
@@ -761,6 +762,13 @@ public class WarehouseModelTestRunner : MonoBehaviour
             return false;
         }
 
+        if (provenance.configFingerprintVersion != WarehouseExperimentRuntime.ConfigFingerprintVersion &&
+            config.rayObservationFormat != WarehouseRayObservationFormat.LegacyRay12)
+        {
+            reason = "Training used the legacy Ray observation format, but the test config selects FrontDynamic19.";
+            return false;
+        }
+
         if (!string.IsNullOrEmpty(provenance.presetId) && config.configId != provenance.presetId)
         {
             reason = $"Preset ID differs (training={provenance.presetId}, test={config.configId}).";
@@ -782,6 +790,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
         }
 
         if ((provenance.configFingerprintVersion == WarehouseExperimentRuntime.ConfigFingerprintVersion ||
+             provenance.configFingerprintVersion == WarehouseExperimentRuntime.PreviousConfigFingerprintVersion ||
              provenance.configFingerprintVersion == WarehouseExperimentRuntime.LegacyConfigFingerprintVersion) &&
             !string.IsNullOrEmpty(provenance.presetContentHash))
         {

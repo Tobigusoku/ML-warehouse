@@ -53,11 +53,14 @@ public static class WarehouseStartupChecks
                 var fresh = ScriptableObject.CreateInstance<WarehouseExperimentConfig>();
                 objects.Add(fresh);
                 Require(fresh.agentCount == 16 && Mathf.Approximately(fresh.penaltyAgentCollision, -5f) &&
-                    Mathf.Approximately(fresh.agentContactStopSeconds, 1f),
-                    "New configs default to 16 agents and the contact safety rule");
+                    Mathf.Approximately(fresh.agentContactStopSeconds, 1f) &&
+                    fresh.rayObservationFormat == WarehouseRayObservationFormat.LegacyRay12,
+                    "New configs preserve the legacy observation format by default");
                 var config = Config(1);
                 string legacyHash = WarehouseExperimentRuntime.GetConfigContentHash(
                     config, WarehouseExperimentRuntime.LegacyConfigFingerprintVersion);
+                string previousHash = WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.PreviousConfigFingerprintVersion);
                 string currentHash = WarehouseExperimentRuntime.GetConfigContentHash(config);
                 config.agentContactStopSeconds = 0f;
                 Require(legacyHash == WarehouseExperimentRuntime.GetConfigContentHash(
@@ -65,6 +68,18 @@ public static class WarehouseStartupChecks
                     "Legacy training records ignore the newly added contact rule field");
                 Require(currentHash != WarehouseExperimentRuntime.GetConfigContentHash(config),
                     "New training records fingerprint the contact rule");
+                config.rayObservationFormat = WarehouseRayObservationFormat.FrontDynamic19;
+                Require(previousHash != WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.PreviousConfigFingerprintVersion),
+                    "Previous fingerprint still includes the contact rule");
+                config.agentContactStopSeconds = 1f;
+                Require(previousHash == WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.PreviousConfigFingerprintVersion) &&
+                    currentHash != WarehouseExperimentRuntime.GetConfigContentHash(config),
+                    "Old fingerprints ignore only the new Ray format; current fingerprint records it");
+                Require(WarehouseRobotAgent.GetBaseObservationSize(WarehouseRayObservationFormat.LegacyRay12) == 56 &&
+                    WarehouseRobotAgent.GetBaseObservationSize(WarehouseRayObservationFormat.FrontDynamic19) == 122,
+                    "Observation sizes are 65/83 for legacy and 131/149 for front dynamic");
                 var agentObject = new GameObject("ContactConfigAgent");
                 objects.Add(agentObject);
                 var agent = agentObject.AddComponent<WarehouseRobotAgent>();
@@ -123,6 +138,7 @@ public static class WarehouseStartupChecks
             Check(() =>
             {
                 var config = Config(2);
+                config.rayObservationFormat = WarehouseRayObservationFormat.FrontDynamic19;
                 var g = Environment("GrowCount", config, 1);
                 Prepare(g);
                 var manager = Manager(g);
@@ -138,7 +154,41 @@ public static class WarehouseStartupChecks
                         manager.robotPrefab.GetComponent<MeshFilter>().sharedMesh &&
                         manager.robotAgents[1].GetComponent<WarehousePheromoneDebugger>() != null,
                     "Spawned agents preserve the prefab mesh and components");
+                Require(manager.robotAgents.TrueForAll(a =>
+                    a.rayObservationFormat == WarehouseRayObservationFormat.FrontDynamic19) &&
+                    manager.robotAgents[1].GetComponent<Unity.MLAgents.Policies.BehaviorParameters>()
+                        .BrainParameters.VectorObservationSize == 131,
+                    "Placed and spawned agents both receive the selected front sensor and ONNX input size");
                 Invoke("ValidateAgentRoster", g, manager, false);
+            }, ref passed);
+
+            Check(() =>
+            {
+                var observerObject = new GameObject("FrontObserver");
+                var otherObject = new GameObject("FrontOther");
+                objects.Add(observerObject);
+                objects.Add(otherObject);
+                observerObject.transform.position = new Vector3(1000f, 1000f, 1000f);
+                otherObject.transform.position = observerObject.transform.position + Vector3.forward * 3f;
+                observerObject.AddComponent<CapsuleCollider>();
+                otherObject.AddComponent<CapsuleCollider>();
+                var observerBody = observerObject.AddComponent<Rigidbody>();
+                var otherBody = otherObject.AddComponent<Rigidbody>();
+                observerBody.useGravity = otherBody.useGravity = false;
+                observerBody.velocity = Vector3.forward;
+                otherBody.velocity = Vector3.back * 2f;
+                var observer = observerObject.AddComponent<WarehouseRobotAgent>();
+                otherObject.AddComponent<WarehouseRobotAgent>();
+                observer.rayDistance = 10f;
+                observer.rayNoise = 0f;
+                observer.rayObservationFormat = WarehouseRayObservationFormat.FrontDynamic19;
+                Physics.SyncTransforms();
+                float[] data = new WarehouseObservations(observer).CollectRayObservationsArray();
+                int center = 9 * WarehouseObservations.FrontObservationsPerRay;
+                Require(data.Length == 114 && data[center] > 0f && data[center] < 1f &&
+                    data[center + 3] == 1f && Mathf.Abs(data[center + 4]) < 0.001f &&
+                    Mathf.Abs(data[center + 5] + 0.3f) < 0.001f,
+                    "Front sensor detects an approaching Agent and reports relative velocity");
             }, ref passed);
 
             Check(() =>

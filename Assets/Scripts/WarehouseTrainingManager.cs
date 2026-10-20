@@ -786,15 +786,16 @@ public class WarehouseTrainingManager : MonoBehaviour
             }
 
             var localPheromone = GetComponent<WarehousePheromone>();
-            behavior.BrainParameters.VectorObservationSize = WarehouseRobotAgent.BaseObservationSize +
+            var config = warehouseGenerator != null && warehouseGenerator.useExperimentConfig
+                ? warehouseGenerator.experimentConfig : null;
+            behavior.BrainParameters.VectorObservationSize = WarehouseRobotAgent.GetBaseObservationSize(
+                config != null ? config.rayObservationFormat : agent.rayObservationFormat) +
                 (localPheromone != null ? localPheromone.PheromoneObservationSize : 9);
 
             agent.trainingManager = this;
             agent.envRoot         = envRoot;
             agent.pheromone       = localPheromone;
-            WarehouseExperimentRuntime.ApplyAgent(agent,
-                warehouseGenerator != null && warehouseGenerator.useExperimentConfig
-                    ? warehouseGenerator.experimentConfig : null);
+            WarehouseExperimentRuntime.ApplyAgent(agent, config);
             robotAgents.Add(agent);
             robotGo.SetActive(true);
 

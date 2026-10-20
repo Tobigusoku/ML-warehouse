@@ -1,13 +1,13 @@
 # Run with:
 #   python tr.py
 
-runs=2
-prefix=wh_middle2Gate_ST_16_v1_
+runs=3
+prefix=wh_middle2Gate_ST_16_v4_
 digits=2
 start=auto
 
 # ML-Agents trainer seeds, one per run. Reuse the same list across conditions.
-trainer_seeds=1,2
+trainer_seeds=1,2,3
 
 config=warehouse_training.yaml
 env=App/ML-warehouse.exe

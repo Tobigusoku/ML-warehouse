@@ -19,7 +19,7 @@ using Unity.MLAgents.Sensors;
 ///
 /// ■ BehaviorParameters 設定:
 ///   Behavior Name:       WarehouseRobot
-///   Vector Observation:  65 (LegacyScalar9) or 83 (VectorField27)
+///   Vector Observation:  65/83 (LegacyRay12) or 131/149 (FrontDynamic19)
 ///   Continuous Actions:  2
 ///   Discrete Branches:   なし (0)
 /// </summary>
@@ -72,6 +72,9 @@ public class WarehouseRobotAgent : Agent
     [Tooltip("レイにノイズを加える割合 (0=なし, 0.05=5%)")]
     [Range(0f, 0.2f)]
     public float rayNoise = 0.02f;
+
+    [Tooltip("LegacyRay12=従来の全周12方向、FrontDynamic19=前方19方向の幅付き検知と他Agentの相対速度。後退操作は引き続き可能です。")]
+    public WarehouseRayObservationFormat rayObservationFormat = WarehouseRayObservationFormat.LegacyRay12;
 
     [Header("===== インタラクション =====")]
     [Tooltip("棚に荷物を置ける距離")]
@@ -250,10 +253,26 @@ public class WarehouseRobotAgent : Agent
     public void ConfigurePheromoneObservationFormat(WarehousePheromoneObservationFormat format)
     {
         pheromoneObservationFormat = format;
+        UpdateObservationSize();
+    }
+
+    public void ConfigureRayObservationFormat(WarehouseRayObservationFormat format)
+    {
+        rayObservationFormat = format;
+        UpdateObservationSize();
+    }
+
+    void UpdateObservationSize()
+    {
         var behavior = GetComponent<BehaviorParameters>();
         if (behavior != null)
-            behavior.BrainParameters.VectorObservationSize = BaseObservationSize + PheromoneObservationSize;
+            behavior.BrainParameters.VectorObservationSize = GetBaseObservationSize(rayObservationFormat) + PheromoneObservationSize;
     }
+
+    public static int GetBaseObservationSize(WarehouseRayObservationFormat format) =>
+        8 + (format == WarehouseRayObservationFormat.FrontDynamic19
+            ? WarehouseObservations.FrontRayCount * WarehouseObservations.FrontObservationsPerRay
+            : WarehouseObservations.LegacyRayCount * WarehouseObservations.LegacyObservationsPerRay);
 
     int PheromoneObservationSize =>
         pheromoneObservationFormat == WarehousePheromoneObservationFormat.VectorField27 ? 27 : 9;
@@ -429,7 +448,7 @@ public class WarehouseRobotAgent : Agent
 
     // ==========================================
     //  観測値の収集
-    //  基本観測 8 + レイキャスト 48 + フェロモン 9/27 = 合計 65/83
+    //  基本観測 8 + 障害物観測 48/114 + フェロモン 9/27 = 合計 65/83 または 131/149
     // ==========================================
     public override void CollectObservations(VectorSensor sensor)
     {
