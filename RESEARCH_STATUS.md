@@ -7,7 +7,18 @@
 操作手順は [EXPERIMENT_WORKFLOW.md](EXPERIMENT_WORKFLOW.md) を参照する。記述が競合する場合はコードを優先する。
 実験記録は `docs/experiments/` に比較実験ごとに1ファイル作り、同一条件のseed違いや追試をまとめる。
 今回の記録は [6Agent・TaskSeparated実験](docs/experiments/task_separated_six_agent_v1.md) を参照。
-新しい16Agent条件の学習・推論は [v3実験記録](docs/experiments/subtask_separated_sixteen_agent_v3.md) を参照。
+16Agent条件の観測比較は [v3/v4実験記録](docs/experiments/front_dynamic_sensor_v4.md) を参照。
+
+## 直近の要点（2026-10-21確認時点）
+
+- 16Agent・同一倉庫で、前方動的観測を使って再学習したv4は、旧観測v3に比べて
+  300秒推論の完了数が平均307.5→385.5、Agent接触ペア数が587.3→155.9。
+  trainer seed 3件 x trial seed 5件の全15組で、v4は完了が多く接触が少ない。
+- これは**観測方式を変えた比較**であり、フェロモンによる改善を示す結果ではない。
+  v3/v4とも `SubtaskSeparated + Scalar` で、フェロモン報酬も同じ。
+- フェロモンなしの `None_v2` はv4を複製し、方式だけ `None` にした条件。
+  10月21日時点で `_01` の学習開始記録を確認したが、学習完了・推論結果は未確認。
+  `TaskSeparated` と `Directional + VectorField27` の同条件比較も未実施。
 
 ## 実装済み (Implemented)
 
@@ -119,13 +130,24 @@
 - `STseparated_v3` / `Middle_2Gate_v2` の16Agent条件でtrainer seed 1～3を学習し、
   各最終ONNXを300秒 x 5試行で推論済み。旧run名 `v2` は設定指定ミスで別条件だったため、
   v3の反復結果には含めない。詳細は [v3実験記録](docs/experiments/subtask_separated_sixteen_agent_v3.md)。
-- 次の学習予定は `STseparated_v4` / `Middle_2Gate_v2` の16Agent条件。
-  v3からRay観測を `LegacyRay12` から `FrontDynamic19` へ変更し、その他のConfig値は維持。
-  `Env ML.prefab` はv4を参照し、`tr.txt` は `wh_middle2Gate_ST_16_v4_` の3run、trainer seed 1/2/3。
-  学習・推論結果はまだない。v3と同じ試行条件で比較予定。
+- `STseparated_v4` / `Middle_2Gate_v2` の16Agent条件はtrainer seed 1～3で学習し、
+  各最終ONNXをv3と同じ300秒 x 5試行で推論済み。詳細は
+  [v3/v4観測比較](docs/experiments/front_dynamic_sensor_v4.md)。
+- `None_v2` / `Middle_2Gate_v2` の16Agent条件はv4からフェロモン方式だけを `None` に変更して準備済み。
+  `wh_middle2Gate_none_16_v2_01` の起動記録ではtrainer seed 1、6環境 x 16Agentを確認。
+  この確認時点で学習・推論は未完了で、比較結果はまだない。
 - 6Agent推論は `_01`～`_03` の300秒試行を完了。初回中断した `_03` も2026-10-12に再実行済み。
 
 ## 最新結果 (Latest Results)
+
+### 前方動的障害物観測・v3/v4比較
+
+v3の `LegacyRay12` とv4の `FrontDynamic19` を、同じ環境Preset・報酬・16Agent・trainer seed 1～3、
+各300秒 x trial seed 1～5で比較した。両条件とも学習/テストConfigのハッシュが一致。
+15試行平均の完了数は307.5から385.5へ増加、Agent接触ペア数は587.3から155.9へ減少。
+Agent非接触完了率は28.6%から74.3%。全15組でv4は完了が多くAgent接触が少ない。
+前方観測の密度・検知方法・相対速度を同時変更したため、個別の寄与やフェロモンの効果は未判定。
+詳細は [v3/v4観測比較](docs/experiments/front_dynamic_sensor_v4.md)。
 
 ### 16Agent・SubtaskSeparated・v3条件
 
@@ -238,7 +260,8 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 - 学習ではフェロモンがEpisodeをまたいで蓄積するが、推論試行はゼロ初期化するため、開始時分布が異なる。
 - 旧Configの `maxStepLimit` は50,000で、失敗Episodeが長くタイムアウト信号が疎になる可能性がある。
   `STseparated_v2` は15,000に短縮して学習済みだが、最適値は未検証。
-- 旧CSVのAgent衝突は双方で数え得る。新しいペア単位計測と安全停止はUnity実機で未検証。
+- 旧CSVのAgent衝突は双方で数え得る。v3/v4の新CSVでは接触ペア開始数を計測しているが、
+  個々の接触位置・停止時間とペナルティ付与の実機照合は未実施。
   達成0時の「衝突/タスク」が0になる表示も不適切。
 - 棚衝突の分離計測とCSV出力は1モデル x 1試行で実機確認済み。目的棚除外と継続接触の判定は
   回帰チェック済みだが、モデル間比較には同一条件での再テストが必要。
@@ -267,8 +290,8 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
   表すとは限らない。共通スケール表示と複数レイヤー同時重畳は未実装。
 - Directionalの最終方向値はCSVへ出るが、HUD/床表示は強度ヒートマップのみで方向矢印は未実装。
 - `VectorField27` は観測数が83へ変わるため、65入力の既存ONNXとは互換性がなく再学習が必要。
-- `FrontDynamic19` も観測数131/149へ変わるため新規学習が必要。前方のみを観測するので、
-  後退中の障害物や他Agentは見えない。接触回避の有効性は未検証。
+- `FrontDynamic19` は観測数131/149へ変わるため新規学習が必要。前方のみを観測するので、
+  後退中の障害物や他Agentは見えない。16Agentでの接触減少は確認したが、他条件での有効性は未検証。
 - 2026-10-09の `_03` 初回推論中、Unity Editorが `RenderTexture.Create failed: width & height must be larger than 0` と
   `Graphics.SetRenderTarget called with bad depth RenderBuffer` を大量出力した。スタックは `UnityEditor.SceneView.DoOnGUI`
   のみで倉庫コードを含まず、Scene Viewのレイアウトサイズ0が原因とみられる。手動停止後は出力も停止。
@@ -278,18 +301,22 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 
 1. Unityメニューの24件版回帰チェックを実行する。`SubtaskSeparated + Directional + VectorField27` の
    短時間学習/推論で観測数83、サブタスク分離、方向CSVを確認する。
-   `FrontDynamic19` の131/149次元の学習・推論と前方の検知も目視確認する。
+   `FrontDynamic19` の131次元の学習・推論は完了。149次元と前方検知の実機確認は未実施。
 2. 6Agentの`SubtaskSeparated`を正式に評価するなら、6体用の新Configとrun IDを作り、
    Playerを再ビルドして学習し直す。既存の16体Configと旧runを上書きしない。
 3. Agent数を1、2、4体と段階的に増やして、棚衝突、Agent衝突、
    ゲート混雑、観測不足を切り分ける。Agent同士の衝突時に両者を終了・再生成する条件も比較候補とする。
-4. v3のゲート幅拡張後も接触は多い。スポーン直後の接触を検証し、接触位置・時刻を記録したうえで、
-   v3と同じ環境形状・報酬・Agent数・接触ルールでフェロモンなしのBaseを用意し、
-   同じseed集合で比較する。実停止時間も検証し、達成0時の「衝突/タスク」表示も直す。
-5. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
-6. `pheromoneRewardScale = 0` と現行条件を比較し、異常挙動が報酬由来か切り分ける。
-7. 成功runのEpisode長を基準に、`maxStepLimit`短縮候補を決める。
-8. `None`、Scalarの`TaskSeparated`、Directionalの`SubtaskSeparated`を同一seed集合で比較する。
+4. `None_v2` の学習完了後、v4と同じ300秒 x trial seed 1～5で推論し、
+   完了数・Agent接触・Agent非接触完了数を比較する。方式と報酬の有無が同時に変わるため、
+   最初は「現行フェロモン方式全体の効果」として解釈する。
+5. 同じ前方観測・倉庫・報酬・16AgentでScalarの `TaskSeparated` を比較し、
+   その後 `SubtaskSeparated + Directional + VectorField27` を評価する。
+   Directionalはフェロモン報酬が0なので、情報表現だけの効果とは区別する。
+6. v4でも残るAgent接触について、スポーン直後の接触、接触位置・時刻、実停止時間を検証する。
+   達成0時の「衝突/タスク」表示も直す。
+7. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
+8. `pheromoneRewardScale = 0` と現行条件を比較し、情報共有と報酬の寄与を切り分ける。
+9. 成功runのEpisode長を基準に、`maxStepLimit`短縮候補を決める。
 
 ## 検討中 (Ideas Under Consideration)
 
@@ -326,7 +353,7 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 
 ## 最近変更した主要ファイル (Files Changed Recently)
 
-直近の主な更新: Configで前方19方向の動的障害物観測を選択可能にし、旧Ray観測とハッシュ互換を維持。Generatorの手動値を新規Environment Presetに保存するボタンも追加。`Middle_2Gate_v2`、`STseparated_v3/v4` とv3推論記録を追加。
+直近の主な更新: Configで前方19方向の動的障害物観測を選択可能にし、旧Ray観測とハッシュ互換を維持。Generatorの手動値を新規Environment Presetに保存するボタンも追加。`Middle_2Gate_v2`、`STseparated_v3/v4`、フェロモンなし比較用の`None_v2`、v3/v4推論比較を記録。
 
 - `Assets/Scripts/WarehouseExperimentConfig.cs`
 - `Assets/Scripts/WarehouseObservations.cs`
@@ -347,12 +374,14 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 - `docs/experiments/subtask_separated_sixteen_agent_v1.md`
 - `docs/experiments/subtask_separated_sixteen_agent_contact_stop_v2.md`
 - `docs/experiments/subtask_separated_sixteen_agent_v3.md`
+- `docs/experiments/front_dynamic_sensor_v4.md`
 - `RESEARCH_WORKFLOW.md`、`AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
 
 確認済み: 棚衝突版のUnity回帰チェック17件、6Agent・300秒推論の `_01`～`_03` CSV保存、
 今回のC#本体・Editorコードの警告0・エラー0ビルド。新ルール `STseparated_v2` で2runの学習記録と
 各5試行の推論CSVを確認済み。Configプレビューと起動時再生成の直接目視、更新版Unity回帰チェック、
-停止秒数の実測は未実施。新Ray方式のUnity Editor回帰チェックと学習は未実施。
+停止秒数の実測は未実施。新Ray方式のUnity Editor回帰チェックは未実施だが、
+v4の学習記録と推論CSV（3run x 5試行）は確認済み。
 
 ## 次回メモ (Notes for Next Session)
 
@@ -363,11 +392,12 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 - v4用Playerは2026-10-21に再ビルド済み。exe本体の日時は古いままだが、
   `App/ML-warehouse_Data/Managed/Assembly-CSharp.dll` とSceneデータは更新済みで、
   DLL内に `FrontDynamic19` / `WarehouseRayObservationFormat` の型名がある。
-- v4学習開始時に起動ログの `Obstacle Observations: FrontDynamic19`、
-  実効16Agent、`Middle_2Gate_v2` を確認する。完了後はv3と同じ300秒 x 5試行で評価する。
+- v4の学習・推論は完了し、記録上は実効16Agent、`Middle_2Gate_v2`、
+  学習/テストConfigのハッシュ一致を確認した。結果は[v3/v4観測比較](docs/experiments/front_dynamic_sensor_v4.md)。
 - HUDはGame View右側に1枚だけ表示されること、`E×S×X` / `E→S` / `S→X` の選択と床表示が一致すること、
   Agent行が増えたとき縦スクロールできることを確認する。
-- 現在の推論結果は旧中心点仕様の1体条件として保持する。正式比較はゲート全幅仕様で再学習して行う。
+- 旧中心点仕様の1体runは別条件として保持する。v3/v4はゲート全幅仕様・16体で学習し、
+  観測方式のみを変えた比較として記録済み。
 - 既存Configは `LegacyScalar9` のまま65次元。方向方式の新Configだけ `VectorField27` を選び83次元で新規学習する。
 - `Shared` と `SubtaskSeparated` はコード実装済みだが、有効性を示す実験結果はまだない。
 - 現在の未コミット差分にはUnityタイマー、IDE、QualitySettings、UserSettingsのローカル変更がある。
