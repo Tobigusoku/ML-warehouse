@@ -1,24 +1,29 @@
 # 研究状況: ML-Warehouse
 
-最終確認日: 2026-10-21
+最終確認日: 2026-10-26
 
 このファイルはコードと研究状況の同期用である。現状、結果、問題、次作業だけを簡潔に保つ。
 記録の更新ルールは [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) にまとめる。
 操作手順は [EXPERIMENT_WORKFLOW.md](EXPERIMENT_WORKFLOW.md) を参照する。記述が競合する場合はコードを優先する。
 実験記録は `docs/experiments/` に比較実験ごとに1ファイル作り、同一条件のseed違いや追試をまとめる。
-今回の記録は [6Agent・TaskSeparated実験](docs/experiments/task_separated_six_agent_v1.md) を参照。
-16Agent条件の観測比較は [v3/v4実験記録](docs/experiments/front_dynamic_sensor_v4.md) を参照。
+直近のScalar比較は [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)、
+Directionalは [分割方式比較](docs/experiments/directional_granularity_front_dynamic_v1.md) を参照。
 
-## 直近の要点（2026-10-21確認時点）
+## 直近の要点（2026-10-26確認時点）
 
 - 16Agent・同一倉庫で、前方動的観測を使って再学習したv4は、旧観測v3に比べて
   300秒推論の完了数が平均307.5→385.5、Agent接触ペア数が587.3→155.9。
   trainer seed 3件 x trial seed 5件の全15組で、v4は完了が多く接触が少ない。
 - これは**観測方式を変えた比較**であり、フェロモンによる改善を示す結果ではない。
   v3/v4とも `SubtaskSeparated + Scalar` で、フェロモン報酬も同じ。
-- フェロモンなしの `None_v2` はv4を複製し、方式だけ `None` にした条件。
-  10月21日時点で `_01` の学習開始記録を確認したが、学習完了・推論結果は未確認。
-  `TaskSeparated` と `Directional + VectorField27` の同条件比較も未実施。
+- フェロモン方式None、ST、Taskを同条件で比較済み。各3学習seed x 5推論試行の平均完了数は
+  371.7、385.5、383.7、Agent接触は164.9、155.9、153.3。Task/ST差は小さくseed別の優劣も不一致。
+  観測とフェロモン報酬の効果は分離できていない。詳細は
+  [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)。
+- STの `Directional + VectorField27` は3学習seedと各5推論試行を完了。平均完了326.9、
+  Agent接触156.1で、Scalar STの385.5、155.9と比較できるが、観測形式と報酬も異なる。
+  TaskVectorは学習中で推論結果はない。詳細は
+  [Directional実験メモ](docs/experiments/directional_granularity_front_dynamic_v1.md)。
 
 ## 実装済み (Implemented)
 
@@ -74,6 +79,9 @@
 - 新しいJSONでは環境ごとに実効レイアウトの出典、寸法、生成棚数、ゲート数、棚Collider条件も記録する。
   自動テストは新しい記録の棚Collider条件と生成レイアウトを照合する。旧JSONは追加欄なしで読める。
 - `Env ML.prefab` には1体を配置し、`taskSaparated_v2` の6体条件では同じ `Agent.prefab` を5体複製する。
+- `Agent.prefab` のBehavior Parametersに旧 `16small01.onnx` は固定しない。学習時はTrainer、
+  モデル比較時はTest RunnerがONNXを設定する。2026-10-23に `wh` で始まらない旧 `results/`
+  44フォルダと、同名の旧モデル40件（ONNXとmeta）を削除した。新しい `wh` runは保持。
 
 ### 学習・テスト
 
@@ -123,7 +131,7 @@
 - 次の推論ではAgent数を1、2、4体と段階的に増やし、単体方策の再現性と多Agent時の混雑を分けて確認する。
 - Scalarの`SubtaskSeparated`は実効16Agentで学習・推論済み。旧run名の`six`は誤記。
   推論結果と条件は [16Agent実験記録](docs/experiments/subtask_separated_sixteen_agent_v1.md) を参照。
-  Directional観測のUnity実機確認とフェロモン方式間の統制比較は未実施。
+  前方観測をそろえたScalar TaskSeparated比較は完了。
 - 接触停止1秒・Agent接触罰-5の `STseparated_v2` はtrainer seed 1、2で学習し、
   各モデル5試行の推論を完了。seed間差と安全性の追加検証中。詳細は
   [新ルール16Agent実験記録](docs/experiments/subtask_separated_sixteen_agent_contact_stop_v2.md) を参照。
@@ -133,12 +141,36 @@
 - `STseparated_v4` / `Middle_2Gate_v2` の16Agent条件はtrainer seed 1～3で学習し、
   各最終ONNXをv3と同じ300秒 x 5試行で推論済み。詳細は
   [v3/v4観測比較](docs/experiments/front_dynamic_sensor_v4.md)。
-- `None_v2` / `Middle_2Gate_v2` の16Agent条件はv4からフェロモン方式だけを `None` に変更して準備済み。
-  `wh_middle2Gate_none_16_v2_01` の起動記録ではtrainer seed 1、6環境 x 16Agentを確認。
-  この確認時点で学習・推論は未完了で、比較結果はまだない。
+- `None_v2` / `Middle_2Gate_v2` の16Agent条件はtrainer seed 1～3の学習と、
+  各最終ONNXの300秒 x 5試行を完了。ST v4との比較は
+  [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)を参照。
+- `taskSeparated_v3` / `Middle_2Gate_v2` の16Agent条件もtrainer seed 1～3の学習と、
+  各最終ONNXの300秒 x 5試行を完了。9runのテストで学習Configとのハッシュ一致を確認。
+- `STseparated_vector_v1_` はtrainer seed 1～3の学習と各5試行を完了。
+  `taskSeparated_vector_v1_` は学習中。2026-10-26確認時点で `_01` の最終ONNXがあり、
+  `_02` はcheckpointのみ、`_03` は未開始。TaskVectorの推論は未実施。
+  詳細は [Directional実験メモ](docs/experiments/directional_granularity_front_dynamic_v1.md)。
 - 6Agent推論は `_01`～`_03` の300秒試行を完了。初回中断した `_03` も2026-10-12に再実行済み。
 
 ## 最新結果 (Latest Results)
+
+### 16Agent・SubtaskSeparated Directional（方式間比較は未完了）
+
+STvectorの3学習seed x 5推論試行はConfigハッシュ一致、300秒・16Agentで完了。
+平均完了数326.9、Agent接触156.1、Agent非接触完了241.7。
+Scalar ST v4は順に385.5、155.9、286.5だが、Directionalでは入力149対131次元、
+フェロモン報酬0対有りも同時に変わる。ベクトルの効果とは断定できない。
+TaskVectorの推論後に同じ内容・観測形式で分割方式を比較する。
+詳細は [Directional実験メモ](docs/experiments/directional_granularity_front_dynamic_v1.md)。
+
+### 16Agent・None / SubtaskSeparated / TaskSeparated比較
+
+同じ前方観測・倉庫・接触ルールでNone v2、ST v4、Task v3を各trainer seed 1～3、
+300秒 x trial seed 1～5で比較。15試行平均の完了数は順に371.7、385.5、383.7、
+Agent接触は164.9、155.9、153.3、Agent非接触完了率は71.2%、74.3%、74.8%。
+TaskとSTの差は小さく、seed別の優劣も一致しない。今回の入口2・棚12・出口2では
+TaskもSTも48マップで、蓄積履歴の分け方が違う。情報共有とフェロモン報酬の寄与は未分離。
+詳細は [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)。
 
 ### 前方動的障害物観測・v3/v4比較
 
@@ -299,19 +331,17 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 
 ## 次タスク (Next Tasks)
 
-1. Unityメニューの24件版回帰チェックを実行する。`SubtaskSeparated + Directional + VectorField27` の
-   短時間学習/推論で観測数83、サブタスク分離、方向CSVを確認する。
-   `FrontDynamic19` の131次元の学習・推論は完了。149次元と前方検知の実機確認は未実施。
+1. Unityメニューの24件版回帰チェックを実行する。STvectorの149次元学習・推論と
+   方向CSV出力は確認済み。83次元の旧Ray組み合わせと、前方検知の直接目視は未確認。
 2. 6Agentの`SubtaskSeparated`を正式に評価するなら、6体用の新Configとrun IDを作り、
    Playerを再ビルドして学習し直す。既存の16体Configと旧runを上書きしない。
 3. Agent数を1、2、4体と段階的に増やして、棚衝突、Agent衝突、
    ゲート混雑、観測不足を切り分ける。Agent同士の衝突時に両者を終了・再生成する条件も比較候補とする。
-4. `None_v2` の学習完了後、v4と同じ300秒 x trial seed 1～5で推論し、
-   完了数・Agent接触・Agent非接触完了数を比較する。方式と報酬の有無が同時に変わるため、
-   最初は「現行フェロモン方式全体の効果」として解釈する。
-5. 同じ前方観測・倉庫・報酬・16AgentでScalarの `TaskSeparated` を比較し、
-   その後 `SubtaskSeparated + Directional + VectorField27` を評価する。
-   Directionalはフェロモン報酬が0なので、情報表現だけの効果とは区別する。
+4. None/ST/Taskの小さな平均差が再現するか、追加trainer seedや別密度・レイアウトで検証する。
+   ST/Task差の評価前に、マップの使用間隔・再訪時の残存量・観測9セル値を測る。
+   Noneとの比較ではフェロモン観測と追加報酬が同時に変わっている。
+5. TaskVectorの学習・推論を完了し、STvectorと同じseed集合で搬送・接触・方向残存率を比較する。
+   Scalarとの比較は報酬と入力次元も異なるため、情報表現だけの効果とは区別する。
 6. v4でも残るAgent接触について、スポーン直後の接触、接触位置・時刻、実停止時間を検証する。
    達成0時の「衝突/タスク」表示も直す。
 7. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
@@ -320,9 +350,13 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 
 ## 検討中 (Ideas Under Consideration)
 
-- 成功時のみ分泌、経路長・所要時間による重み付け、浸透・拡散。
+- 搬送結果の良かった経路だけフェロモンを分泌する案。何を「良い」とするか（達成、所要時間、
+  経路長、衝突など）と、完了まで経路を保持して後から分泌する方法は未決定・未実装。
+  成功時のみ分泌、分泌量の品質重み付け、浸透・拡散も比較候補。
 - 成功経路、衝突・混雑を別チャネルで保持する方式。移動方向チャネル自体は実装済み。
 - 推論中に障害物を追加し、蓄積と蒸発による動的環境への適応を評価する。
+- マップごとの未使用時間と再訪時の残存量を測り、未使用時だけ蒸発を止める条件を比較候補とする。
+  凍結は未実装で、動的障害物がある場合の古い痕跡にも注意する。
 - 衝突原因を、棚への衝突、Agent同士の回避失敗、ゲート付近の混雑、観測不足に分けて検証する。
 - 棚衝突へのペナルティ導入は、分離計測の結果を見てから決める。今回の計測実装では報酬を変更しない。
 - Agent同士が衝突した場合に両者を同時終了・再生成する条件を設け、連続衝突や詰まりへの影響を比較する。
@@ -353,7 +387,7 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 
 ## 最近変更した主要ファイル (Files Changed Recently)
 
-直近の主な更新: Configで前方19方向の動的障害物観測を選択可能にし、旧Ray観測とハッシュ互換を維持。Generatorの手動値を新規Environment Presetに保存するボタンも追加。`Middle_2Gate_v2`、`STseparated_v3/v4`、フェロモンなし比較用の`None_v2`、v3/v4推論比較を記録。
+直近の主な更新: 前方19方向観測の下でScalarのNone/ST/Taskを比較し、DirectionalのSTは3seed推論まで完了。TaskVectorは学習中。コードの新規変更はない。
 
 - `Assets/Scripts/WarehouseExperimentConfig.cs`
 - `Assets/Scripts/WarehouseObservations.cs`
@@ -368,13 +402,15 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 - `Assets/Scripts/Shelfunit.cs`
 - `Assets/Scripts/Editor/WarehouseStartupChecks.cs`
 - `Assets/ExperimentConfigs/`
-- `Assets/Prefab/Env ML.prefab`、`Assets/Scenes/ml test.unity`
+- `Assets/Prefab/Agent.prefab`、`Assets/Prefab/Env ML.prefab`、`Assets/Scenes/ml test.unity`
 - `tr.py`、`tr.txt`、`EXPERIMENT_WORKFLOW.md`
 - `docs/experiments/task_separated_six_agent_v1.md`
 - `docs/experiments/subtask_separated_sixteen_agent_v1.md`
 - `docs/experiments/subtask_separated_sixteen_agent_contact_stop_v2.md`
 - `docs/experiments/subtask_separated_sixteen_agent_v3.md`
 - `docs/experiments/front_dynamic_sensor_v4.md`
+- `docs/experiments/pheromone_mode_front_dynamic_v1.md`
+- `docs/experiments/directional_granularity_front_dynamic_v1.md`
 - `RESEARCH_WORKFLOW.md`、`AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
 
 確認済み: 棚衝突版のUnity回帰チェック17件、6Agent・300秒推論の `_01`～`_03` CSV保存、

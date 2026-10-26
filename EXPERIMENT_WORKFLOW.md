@@ -384,6 +384,8 @@ ConfigとEnvironment Presetの内容ハッシュを照合する。
 
 テストランナーを使う場合、Behavior Parametersへ各ONNXを手で設定する必要はない。
 ランナーがModels配列のモデルを各Agentへ順に設定する。
+`Agent.prefab` に既定のONNXは埋め込んでいない。ランナーを使わず単独で推論する場合は、
+観測数とConfigが一致するモデルをBehavior Parametersへ手動で設定する。
 
 ### 5-3. 任意Configで手動上書きする場合
 
