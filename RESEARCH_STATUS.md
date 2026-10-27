@@ -1,6 +1,6 @@
 # 研究状況: ML-Warehouse
 
-最終確認日: 2026-10-26
+最終確認日: 2026-10-27
 
 このファイルはコードと研究状況の同期用である。現状、結果、問題、次作業だけを簡潔に保つ。
 記録の更新ルールは [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) にまとめる。
@@ -9,7 +9,7 @@
 直近のScalar比較は [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)、
 Directionalは [分割方式比較](docs/experiments/directional_granularity_front_dynamic_v1.md) を参照。
 
-## 直近の要点（2026-10-26確認時点）
+## 直近の要点（2026-10-27確認時点）
 
 - 16Agent・同一倉庫で、前方動的観測を使って再学習したv4は、旧観測v3に比べて
   300秒推論の完了数が平均307.5→385.5、Agent接触ペア数が587.3→155.9。
@@ -20,9 +20,9 @@ Directionalは [分割方式比較](docs/experiments/directional_granularity_fro
   371.7、385.5、383.7、Agent接触は164.9、155.9、153.3。Task/ST差は小さくseed別の優劣も不一致。
   観測とフェロモン報酬の効果は分離できていない。詳細は
   [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)。
-- STの `Directional + VectorField27` は3学習seedと各5推論試行を完了。平均完了326.9、
-  Agent接触156.1で、Scalar STの385.5、155.9と比較できるが、観測形式と報酬も異なる。
-  TaskVectorは学習中で推論結果はない。詳細は
+- `Directional + VectorField27` のST/Taskは各3学習seed x 5推論試行を完了。
+  平均完了は326.9/343.9、Agent接触は156.1/152.9。seed別の優劣は一致せず、
+  マップ分割方式の優劣は未確定。Scalar STとの比較では観測形式と報酬も異なる。詳細は
   [Directional実験メモ](docs/experiments/directional_granularity_front_dynamic_v1.md)。
 
 ## 実装済み (Implemented)
@@ -146,21 +146,21 @@ Directionalは [分割方式比較](docs/experiments/directional_granularity_fro
   [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)を参照。
 - `taskSeparated_v3` / `Middle_2Gate_v2` の16Agent条件もtrainer seed 1～3の学習と、
   各最終ONNXの300秒 x 5試行を完了。9runのテストで学習Configとのハッシュ一致を確認。
-- `STseparated_vector_v1_` はtrainer seed 1～3の学習と各5試行を完了。
-  `taskSeparated_vector_v1_` は学習中。2026-10-26確認時点で `_01` の最終ONNXがあり、
-  `_02` はcheckpointのみ、`_03` は未開始。TaskVectorの推論は未実施。
+- `STseparated_vector_v1_` / `taskSeparated_vector_v1_` はともにtrainer seed 1～3の
+  学習と各5試行の推論を完了。学習/テストのConfig・環境Presetハッシュは一致。
   詳細は [Directional実験メモ](docs/experiments/directional_granularity_front_dynamic_v1.md)。
 - 6Agent推論は `_01`～`_03` の300秒試行を完了。初回中断した `_03` も2026-10-12に再実行済み。
 
 ## 最新結果 (Latest Results)
 
-### 16Agent・SubtaskSeparated Directional（方式間比較は未完了）
+### 16Agent・DirectionalのSubtaskSeparated / TaskSeparated比較
 
-STvectorの3学習seed x 5推論試行はConfigハッシュ一致、300秒・16Agentで完了。
-平均完了数326.9、Agent接触156.1、Agent非接触完了241.7。
-Scalar ST v4は順に385.5、155.9、286.5だが、Directionalでは入力149対131次元、
-フェロモン報酬0対有りも同時に変わる。ベクトルの効果とは断定できない。
-TaskVectorの推論後に同じ内容・観測形式で分割方式を比較する。
+両方式とも3学習seed x 5推論試行、300秒・16Agentで完了し、Configハッシュ一致。
+ST/Taskの平均完了数は326.9/343.9、Agent接触156.1/152.9、Agent非接触完了241.7/257.4。
+Taskの完了数が平均17.1件多いが、seed 1ではSTが多く、方式の優劣は未確定。
+最終マップの強度加重平均方向長はST 0.9478、Task 0.9184。これは相殺原因の直接証拠ではない。
+Scalar ST v4の平均完了385.5との比較では、入力149対131次元とフェロモン報酬0対有りも
+同時に変わるため、ベクトル情報の効果は断定できない。
 詳細は [Directional実験メモ](docs/experiments/directional_granularity_front_dynamic_v1.md)。
 
 ### 16Agent・None / SubtaskSeparated / TaskSeparated比較
@@ -340,8 +340,8 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 4. None/ST/Taskの小さな平均差が再現するか、追加trainer seedや別密度・レイアウトで検証する。
    ST/Task差の評価前に、マップの使用間隔・再訪時の残存量・観測9セル値を測る。
    Noneとの比較ではフェロモン観測と追加報酬が同時に変わっている。
-5. TaskVectorの学習・推論を完了し、STvectorと同じseed集合で搬送・接触・方向残存率を比較する。
-   Scalarとの比較は報酬と入力次元も異なるため、情報表現だけの効果とは区別する。
+5. DirectionalのST/Task比較では、配送・帰還の分泌寄与と同一セルの逆方向寄与、
+   再訪間隔を計測して相殺仮説を直接検証する。Scalarとの差は報酬と入力次元も異なるため区別する。
 6. v4でも残るAgent接触について、スポーン直後の接触、接触位置・時刻、実停止時間を検証する。
    達成0時の「衝突/タスク」表示も直す。
 7. 必要になった段階で、テストバッチ別保存、checkpoint選択、Unity乱数分離を実装する。
@@ -393,7 +393,7 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
 
 ## 最近変更した主要ファイル (Files Changed Recently)
 
-直近の主な更新: 前方19方向観測の下でScalarのNone/ST/Taskを比較し、DirectionalのSTは3seed推論まで完了。TaskVectorは学習中。コードの新規変更はない。
+直近の主な更新: 前方19方向観測の下でScalarのNone/ST/Task、DirectionalのST/Taskを各3seed x 5試行で比較。コードの新規変更はない。
 
 - `Assets/Scripts/WarehouseExperimentConfig.cs`
 - `Assets/Scripts/WarehouseObservations.cs`
