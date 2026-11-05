@@ -1,6 +1,6 @@
 # 研究状況: ML-Warehouse
 
-最終確認日: 2026-10-27
+最終確認日: 2026-11-05
 
 このファイルはコードと研究状況の同期用である。現状、結果、問題、次作業だけを簡潔に保つ。
 記録の更新ルールは [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) にまとめる。
@@ -9,8 +9,13 @@
 直近のScalar比較は [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)、
 Directionalは [分割方式比較](docs/experiments/directional_granularity_front_dynamic_v1.md) を参照。
 
-## 直近の要点（2026-10-27確認時点）
+## 直近の要点（2026-11-05確認時点）
 
+- 24Agent・`SubtaskSeparated + Scalar` はtrainer seed 3件 x trial seed 5件の
+  300秒推論を完了。平均完了499.0、Agent接触346.7、Agentあたり完了20.79。
+  16体STの385.5、155.9、24.10と比べると総完了は増え、Agentあたり完了は減った。
+  24体Noneは学習済みだが推論CSV未確認のため、有無比較は未実施。
+  詳細は [24Agent ST実験メモ](docs/experiments/agent_count_24_scalar_st_v1.md)。
 - 16Agent・同一倉庫で、前方動的観測を使って再学習したv4は、旧観測v3に比べて
   300秒推論の完了数が平均307.5→385.5、Agent接触ペア数が587.3→155.9。
   trainer seed 3件 x trial seed 5件の全15組で、v4は完了が多く接触が少ない。
@@ -370,6 +375,9 @@ Agent非接触で完了した割合は30.53%対30.63%でほぼ同じ。壁・棚
   当該 `Editor.log` は約2.28 GBまで増大した。2026-10-12の再実行は正常終了したが、再発時はSceneタブのサイズまたはEditor Layoutを確認する。
 
 ## 次タスク (Next Tasks)
+
+24Agent Noneの各ONNXをSTと同じ300秒 x trial seed 1～5で推論し、
+学習Config・Presetハッシュと実効Agent数を照合して有無比較を完了する。
 
 1. Unityメニューの24件版回帰チェックを実行する。STvectorの149次元学習・推論と
    方向CSV出力は確認済み。83次元の旧Ray組み合わせと、前方検知の直接目視は未確認。
