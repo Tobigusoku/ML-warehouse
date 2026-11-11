@@ -55,6 +55,16 @@ mlagents-learn --help
   `FrontDynamic19` ではそれぞれ131次元、149次元になる。
   `Agent Prefab` が未指定のまま自動生成が必要な場合は起動を停止する。
   手動設定モードでは既存の `Auto Spawn Count` を使う。
+- 初回開始と各推論試行の開始時には、全Agentを同時に入口付近へ配置する。
+  AgentのCapsuleColliderと棚・壁のColliderを確認し、重なる候補は使わない。
+  通常の18枠を優先し、足りない場合だけ入口プラットフォーム内の追加候補列を使う。
+  安全な位置が人数分なければ重ねずに起動を停止する。入口数・ゲート幅・通常のタスク完了後の
+  再スポーン処理は変更しない。18体超では通常の再スポーン時に従来の空き枠不足が起こり得るため、
+  初回接触の解消と長時間運用中の接触解消は分けて評価する。
+- 初回配置の抽選には独立した乱数を使う。学習開始時はEnvironment Presetのseed
+  （0なら初期配置には固定の0）、推論試行では `Reseed Each Trial` のtrial seedを使う。
+  同じ台数・レイアウト・trial seedなら、Noneとフェロモンありで初期位置が一致する。
+  タスク抽選に使うUnity乱数系列は初期配置の抽選では進めない。
 - 全環境の初期化・数の検証が完了してからConsoleとJSONへ実数を記録する。
   並列環境数は自動記録されるため入力不要で、学習8環境・テスト1環境でもよい。
   自動テストでは各倉庫内のAgent数を学習記録と照合する。旧JSONに実数がない場合は警告する。
@@ -75,7 +85,7 @@ environmentInstances[]:
 `environmentInstanceCount` と `effectiveAgentCount` を保存する。
 
 設定検証と試行リセットの回帰チェックはPlayしていない状態で、Unityメニューの
-`Warehouse > Checks > Experiment Startup` から実行できる。Consoleに `PASS: 23 checks` が出れば成功。
+`Warehouse > Checks > Experiment Startup` から実行できる。Consoleに `PASS: 25 checks` が出れば成功。
 
 帰還先は選択されたゲート中心の一点ではなく、ゲート全幅の線分である。出口観測、距離短縮報酬、
 成功判定はすべてAgent位置から線分上の最近傍点を使う。出口indexと完全タスク識別は従来どおりである。
@@ -124,6 +134,16 @@ Experiment Configには、フェロモンのマップ分割・セル内容・観
   距離、棚/壁/Agent判定、他Agentの相対速度X/Zを入力する。後退操作は可能なままだが、後方は観測しない。
   新方式では入力数が変わるため、既存Configを複製して新しいIDを付け、Playerを再ビルドして学習し直す。
 - 値を変える時は既存Assetを上書きせず、`TaskSeparated_v2` のように新しいAssetを作る。
+- `Pheromone Deposit Timing` は `EveryStep`（従来どおり毎行動で分泌）か
+  `OnTaskCompleted`（棚を経て出口に到達した時だけ、配送・帰還の訪問セルへ各1回分泌）を選ぶ。
+  後者では未完了の経路は分泌せず、Scalarのフェロモン報酬は各フェーズ・各セルの初回訪問だけに与える。
+  分泌量は各訪問セルにつき `Pheromone Secretion Amount` 1回分となる。
+  新方式は新しい版付きConfigで学習する。Configの公開フィールドが増えたため指紋はv5。
+  旧v2/v3/v4の学習記録は従来方式として照合し、新方式を旧ONNXへ自動適用しない。
+- `STseparated_successRoute_v1` は16Agent・フェロモン報酬あり、
+  `STseparated_successRoute_noRw_v1` は同条件でフェロモン報酬0の新Config。
+  現行の `STseparated_noRw_v1` と後者を比較すると分泌時期だけを切り分けやすい。
+  学習前にTraining Scene/Prefabで新Configを指定し、Playerを再ビルドする。
 
 ## 2. 日常の動作確認をする場合
 
@@ -252,6 +272,11 @@ Unity Editorを接続する手順とは別である。
   ML-Agentsの出力は同じ `results/<run-id>/` に保存される。
 - 修正前の古いビルドが `App/results/<run-id>/unity_experiment.json` へ保存した場合も、
   現在の `tr.py` は学習終了後に正規の結果フォルダへコピーする。
+- 複数Playerを使う場合、古いビルドでは同じ `unity_experiment.json` への同時書き込みで
+  `Sharing violation` が起こり得る。修正済みコードを使うにはPlayerを再ビルドする。
+  再ビルド前は `extra_args=--num-envs=1` で実行する。
+- `tr.txt` のprefixはUnityの実効Configに合わせる。`none` という名前だけでは
+  フェロモンが無効にならず、起動時のConfigはビルド内のScene/Prefabで決まる。
 
 ### 4-2. `tr.txt` を設定する
 
@@ -293,6 +318,37 @@ conda環境を有効化したPowerShellで実行する。
 ```powershell
 python tr.py
 ```
+
+### 4-3a. 1つのPlayerで複数Configを順番に学習する
+
+`Assets/Resources/WarehouseExperimentConfigCatalog.asset` に登録したConfigは、その参照先の
+Environment PresetとともにPlayerへ同梱される。Configを追加・変更した場合は一覧を更新して
+**一度Playerを再ビルド**する。その後は登録済みConfigの切り替えだけなら再ビルドしない。
+実行中のPlayerとPythonには、ソースや一覧の変更は反映されない。
+
+新しいPlayerで `python tr.py tr_batch.txt --dry-run` を実行してrun IDを確認し、続けて
+`python tr.py tr_batch.txt` を実行する。`experiment_ids` に並べたConfig IDを順に選択し、
+各Configで `trainer_seeds` のseedを順番に学習する。`runs` は**各Configのseed数**とする。
+run IDは `prefix + Config ID + number_separator + seed番号` で作られる。既定の
+`number_separator=_` では `wh_middle2Gate_STseparated_successRoute_v1_01` となる。
+`number_separator=-` にすれば `...v1-01`。Config ID末尾に `_` や `-` がある場合、
+run ID側では末尾の区切りを一度取り除き、指定した区切りを1つだけ付ける。
+
+`tr.py` はConfig IDを `WAREHOUSE_EXPERIMENT_CONFIG_ID` としてUnityへ渡し、同じPlayer内の全環境へ
+同一Configを適用する。PlayerにIDがなければ起動時に停止する。学習中と終了後に
+`unity_experiment.json` のrun ID、trainer seed、実際のConfig IDを照合し、不一致なら停止する。
+`experiment_ids` はConfigアセット内の `Config Id` と完全一致させる。`prefix` に区切りの `_` が
+あってもIDの末尾へ追加しない。`tr.py` は学習前と `--dry-run` 時にローカルのカタログを確認し、
+登録外のIDには近い候補を表示する。ビルド済みPlayer内の登録内容はPlayer起動時にも検証する。
+開始前に全run IDの重複と既存results/Modelsとの衝突を調べ、バッチでは `force=true` を認めない。
+現在の `tr.txt` は従来どおりPrefabに設定されたConfigを使う。
+
+学習自体が完了した後に `tr.py` のモデルコピーだけが失敗した場合は、
+`python tr.py tr_batch.txt --resume-batch --dry-run` で再利用対象を確認し、
+`python tr.py tr_batch.txt --resume-batch` で続きから実行する。
+既存runはUnityのConfig ID・seedとtrainerの最終stepが目標step以上であることを確認し、
+ONNXを回収して学習を飛ばす。未完了runや不一致のrunは再利用せず停止する。
+Unityの `unity_experiment.json` はUTF-8 BOM付きでも読み取る。
 
 ### 4-4. 学習中の段階別指標を確認する
 
@@ -342,7 +398,7 @@ ConfigとEnvironment Presetの内容ハッシュを照合する。
 - 指紋バージョンを持たない古いJSONは、アセットIDだけを照合して警告を出す。
   学習時の設定値まで完全に検証したい比較実験では、新しい形式で学習し直す。
 - v2指紋の学習記録は旧フィールドで照合する。接触停止を有効にしたConfigは旧モデルへ
-  自動適用しない。v3指紋は接触停止秒数を含む。v4指紋はRay観測方式も含む。
+  自動適用しない。v3指紋は接触停止秒数、v4指紋はRay観測方式、v5指紋は分泌時期も含む。
   v2/v3の旧学習モデルに `FrontDynamic19` を自動適用しない。
 - 同じConfig IDのアセットが複数あり、内容ハッシュでも一意に決められない場合は、誤った
   Configを適用せずテストを停止する。正式Configには一意なConfig IDを付ける。

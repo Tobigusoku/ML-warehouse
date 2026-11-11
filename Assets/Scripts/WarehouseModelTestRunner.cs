@@ -392,7 +392,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
             if (reseedEachTrial)
                 UnityEngine.Random.InitState(trialSeed);
 
-            manager.ResetForEvaluationTrial();
+            manager.ResetForEvaluationTrial(reseedEachTrial ? (int?)trialSeed : null);
 
             float wallStart = Time.realtimeSinceStartup;
             int simulationSteps = 0;
@@ -688,6 +688,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
             if (!HasSameRecordedLayout(provenance, out reason)) return false;
             if (provenance.configFingerprintVersion != WarehouseExperimentRuntime.ConfigFingerprintVersion &&
                 provenance.configFingerprintVersion != WarehouseExperimentRuntime.PreviousConfigFingerprintVersion &&
+                provenance.configFingerprintVersion != WarehouseExperimentRuntime.OlderConfigFingerprintVersion &&
                 provenance.configFingerprintVersion != WarehouseExperimentRuntime.LegacyConfigFingerprintVersion)
             {
                 Debug.LogWarning("[ModelTestRunner] Training provenance uses an older config fingerprint format. " +
@@ -763,6 +764,14 @@ public class WarehouseModelTestRunner : MonoBehaviour
         }
 
         if (provenance.configFingerprintVersion != WarehouseExperimentRuntime.ConfigFingerprintVersion &&
+            config.pheromoneDepositTiming != WarehousePheromoneDepositTiming.EveryStep)
+        {
+            reason = "Training used immediate pheromone deposition, but the test config selects completion-only deposition.";
+            return false;
+        }
+
+        if ((provenance.configFingerprintVersion == WarehouseExperimentRuntime.OlderConfigFingerprintVersion ||
+             provenance.configFingerprintVersion == WarehouseExperimentRuntime.LegacyConfigFingerprintVersion) &&
             config.rayObservationFormat != WarehouseRayObservationFormat.LegacyRay12)
         {
             reason = "Training used the legacy Ray observation format, but the test config selects FrontDynamic19.";
@@ -791,6 +800,7 @@ public class WarehouseModelTestRunner : MonoBehaviour
 
         if ((provenance.configFingerprintVersion == WarehouseExperimentRuntime.ConfigFingerprintVersion ||
              provenance.configFingerprintVersion == WarehouseExperimentRuntime.PreviousConfigFingerprintVersion ||
+             provenance.configFingerprintVersion == WarehouseExperimentRuntime.OlderConfigFingerprintVersion ||
              provenance.configFingerprintVersion == WarehouseExperimentRuntime.LegacyConfigFingerprintVersion) &&
             !string.IsNullOrEmpty(provenance.presetContentHash))
         {

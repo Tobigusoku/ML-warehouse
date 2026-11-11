@@ -171,6 +171,8 @@ public class WarehouseRobotAgent : Agent
     private Rigidbody rb;
     private Vector3 lastPosition;
     private Vector3 lastPheromonePosition;
+    private readonly Dictionary<int, Vector3> deliveringRoute = new Dictionary<int, Vector3>();
+    private readonly Dictionary<int, Vector3> returningRoute = new Dictionary<int, Vector3>();
     private WarehousePheromoneObservationFormat pheromoneObservationFormat =
         WarehousePheromoneObservationFormat.LegacyScalar9;
     private Phase currentPhase;
@@ -373,6 +375,8 @@ public class WarehouseRobotAgent : Agent
         FindTrainingManager();
 
         currentPhase = Phase.Delivering;
+        deliveringRoute.Clear();
+        returningRoute.Clear();
         ShowCargoVisual();
 
         if (trainingManager != null)
@@ -570,6 +574,10 @@ public class WarehouseRobotAgent : Agent
         if (!safetyStopped) CheckAndResolveStuck(moveInput);
         else stuckTimer = 0f;
 
+        if (pheromone != null && pheromone.depositTiming == WarehousePheromoneDepositTiming.OnTaskCompleted &&
+            pheromone.usePheromone && pheromoneShelfIndex >= 0)
+            RecordSuccessfulRouteCandidate(pheromoneIsDelivering, pheromoneShelfIndex, pheromoneMovement);
+
         if (currentPhase == Phase.Delivering)
             CheckAutoDropAtShelf();
         else if (currentPhase == Phase.Returning)
@@ -592,7 +600,7 @@ public class WarehouseRobotAgent : Agent
         AddShapingReward();
 
         // ==========================================
-        //  フェロモン報酬
+        //  即時分泌方式のフェロモン報酬
         //
         //  DELIVERING: (入口 → 棚) マップに分泌
         //  RETURNING : (棚 → 出口) マップに分泌
@@ -601,7 +609,7 @@ public class WarehouseRobotAgent : Agent
         //   - DELIVERING: targetShelfTransform から毎回取得
         //   - RETURNING : CompleteDrop 時に保存した lastDroppedShelfIndex を使用
         // ==========================================
-        if (pheromone != null)
+        if (pheromone != null && pheromone.depositTiming == WarehousePheromoneDepositTiming.EveryStep)
         {
             if (pheromoneShelfIndex >= 0)
             {
@@ -640,6 +648,26 @@ public class WarehouseRobotAgent : Agent
 
         if (WarehousePerformance.IsEnabled(p => p.HUD))
             UpdateDebugData(moveInput, turnInput);
+    }
+
+    void RecordSuccessfulRouteCandidate(bool isDelivering, int shelfIndex, Vector3 movement)
+    {
+        int cellIndex = pheromone.GetCellIndex(transform.position);
+        if (cellIndex < 0) return;
+
+        Dictionary<int, Vector3> route = isDelivering ? deliveringRoute : returningRoute;
+        if (!route.TryGetValue(cellIndex, out Vector3 previousMovement))
+        {
+            route.Add(cellIndex, movement);
+            AddReward(pheromone.GetFirstVisitReward(cellIndex, isDelivering,
+                spawnEntranceIndex, shelfIndex, targetExitIndex));
+        }
+        else if (pheromone.pheromoneContent == WarehousePheromoneContent.Directional &&
+                 previousMovement.sqrMagnitude < pheromone.directionalMovementThreshold * pheromone.directionalMovementThreshold &&
+                 movement.sqrMagnitude >= pheromone.directionalMovementThreshold * pheromone.directionalMovementThreshold)
+        {
+            route[cellIndex] = movement;
+        }
     }
 
     void FixedUpdate()
@@ -814,6 +842,9 @@ public class WarehouseRobotAgent : Agent
 
         if (dist <= exitRange)
         {
+            if (pheromone != null && pheromone.depositTiming == WarehousePheromoneDepositTiming.OnTaskCompleted)
+                pheromone.DepositCompletedRoute(deliveringRoute, returningRoute,
+                    spawnEntranceIndex, lastDroppedShelfIndex, targetExitIndex);
             completedCount++;
             if (!agentContactThisEpisode) collisionFreeCompletedCount++;
             AddReward(rewardExitComplete);

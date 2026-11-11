@@ -2,7 +2,7 @@
 #   python tr.py
 
 runs=3
-prefix=wh_middle2Gate_none_16_v2_
+prefix=wh_middle2Gate_ST_16_noRw_v1_
 digits=2
 start=auto
 
@@ -18,4 +18,4 @@ behavior=WarehouseRobot
 no_graphics=true
 force=false
 mlagents=mlagents-learn
-extra_args=
+extra_args=--num-envs=2

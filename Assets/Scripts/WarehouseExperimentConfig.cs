@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -20,6 +21,12 @@ public enum WarehousePheromoneContent
 {
     Scalar = 0,
     Directional = 1
+}
+
+public enum WarehousePheromoneDepositTiming
+{
+    EveryStep = 0,
+    OnTaskCompleted = 1
 }
 
 public enum WarehousePheromoneObservationFormat
@@ -89,10 +96,12 @@ public class WarehouseExperimentConfig : ScriptableObject
     public WarehousePheromoneMode pheromoneMode = WarehousePheromoneMode.TaskSeparated;
     [Tooltip("セルに蓄積する情報。Scalar=通過量、Directional=通過量と移動方向。Directionalではフェロモン報酬はありません。")]
     public WarehousePheromoneContent pheromoneContent = WarehousePheromoneContent.Scalar;
+    [Tooltip("EveryStep=移動中に分泌、OnTaskCompleted=出口到達時に成功した往復経路の各セルへ1回ずつ分泌します。")]
+    public WarehousePheromoneDepositTiming pheromoneDepositTiming = WarehousePheromoneDepositTiming.EveryStep;
     [Tooltip("Agentへ渡すフェロモン観測。LegacyScalar9=周囲9セルの強度、VectorField27=各セルの強度とAgent基準の方向。障害物観測方式と組み合わせた入力数をONNXと一致させてください。")]
     public WarehousePheromoneObservationFormat pheromoneObservationFormat =
         WarehousePheromoneObservationFormat.LegacyScalar9;
-    [Tooltip("Agentがセルを通過した際のフェロモン分泌量。")]
+    [Tooltip("即時方式では1ステップ、成功経路方式では各フェーズの各訪問セルへ加えるフェロモン量。")]
     public float pheromoneSecretionAmount = 1f;
     [Tooltip("蒸発処理1回あたりに減る割合。0=蒸発なし、1=全量消去。")]
     [Range(0f, 1f)] public float pheromoneEvaporationRate = 0.05f;
@@ -244,8 +253,9 @@ public class WarehouseExperimentConfig : ScriptableObject
 /// </summary>
 public static class WarehouseExperimentRuntime
 {
-    public const string ConfigFingerprintVersion = "public-fields-v4";
-    public const string PreviousConfigFingerprintVersion = "public-fields-v3";
+    public const string ConfigFingerprintVersion = "public-fields-v5";
+    public const string PreviousConfigFingerprintVersion = "public-fields-v4";
+    public const string OlderConfigFingerprintVersion = "public-fields-v3";
     public const string LegacyConfigFingerprintVersion = "public-fields-v2";
     private static readonly Dictionary<WarehouseGenerator, WarehouseTrainingManager> environments =
         new Dictionary<WarehouseGenerator, WarehouseTrainingManager>();
@@ -288,10 +298,14 @@ public static class WarehouseExperimentRuntime
     public static string GetConfigContentHash(WarehouseExperimentConfig config, string version)
     {
         if (version == LegacyConfigFingerprintVersion)
-            return GetPublicFieldContentHash(config, nameof(WarehouseExperimentConfig.agentContactStopSeconds),
+            return GetPublicFieldContentHash(config, nameof(WarehouseExperimentConfig.pheromoneDepositTiming),
+                nameof(WarehouseExperimentConfig.agentContactStopSeconds), nameof(WarehouseExperimentConfig.rayObservationFormat));
+        if (version == OlderConfigFingerprintVersion)
+            return GetPublicFieldContentHash(config, nameof(WarehouseExperimentConfig.pheromoneDepositTiming),
                 nameof(WarehouseExperimentConfig.rayObservationFormat));
-        return GetPublicFieldContentHash(config, version == PreviousConfigFingerprintVersion
-            ? nameof(WarehouseExperimentConfig.rayObservationFormat) : null);
+        if (version == PreviousConfigFingerprintVersion)
+            return GetPublicFieldContentHash(config, nameof(WarehouseExperimentConfig.pheromoneDepositTiming));
+        return GetPublicFieldContentHash(config);
     }
 
     public static string GetEnvironmentPresetAssetGuid(WarehouseEnvironmentPreset preset)
@@ -310,7 +324,7 @@ public static class WarehouseExperimentRuntime
         return GetPublicFieldContentHash(preset);
     }
 
-    static string GetPublicFieldContentHash(object target, string excludedField = null, string secondExcludedField = null)
+    static string GetPublicFieldContentHash(object target, params string[] excludedFields)
     {
         if (target == null) return string.Empty;
 
@@ -319,7 +333,7 @@ public static class WarehouseExperimentRuntime
         var content = new StringBuilder();
         foreach (FieldInfo field in fields)
         {
-            if (field.Name == excludedField || field.Name == secondExcludedField) continue;
+            if (Array.IndexOf(excludedFields, field.Name) >= 0) continue;
             // Unity object references have instance-specific serialization. Their identity and
             // content are recorded separately in the provenance JSON.
             if (typeof(UnityEngine.Object).IsAssignableFrom(field.FieldType)) continue;
@@ -369,6 +383,20 @@ public static class WarehouseExperimentRuntime
     static void PrepareEnvironments(List<WarehouseGenerator> generators)
     {
         if (generators.Count == 0) throw new InvalidOperationException("No active warehouse environments were found.");
+        string requestedConfigId = Environment.GetEnvironmentVariable("WAREHOUSE_EXPERIMENT_CONFIG_ID");
+        if (!string.IsNullOrEmpty(requestedConfigId))
+        {
+            WarehouseExperimentConfigCatalog catalog =
+                Resources.Load<WarehouseExperimentConfigCatalog>("WarehouseExperimentConfigCatalog");
+            if (catalog == null)
+                throw new InvalidOperationException("WarehouseExperimentConfigCatalog is missing from Resources in this Player build.");
+            WarehouseExperimentConfig selected = catalog.Find(requestedConfigId);
+            foreach (WarehouseGenerator generator in generators)
+            {
+                generator.useExperimentConfig = true;
+                generator.experimentConfig = selected;
+            }
+        }
         WarehouseGenerator first = generators[0];
         activeUsePreset = first.useExperimentConfig;
         activeConfig = activeUsePreset ? first.experimentConfig : null;
@@ -638,6 +666,7 @@ public static class WarehouseExperimentRuntime
         p.rewardScale = c.pheromoneRewardScale;
         p.pheromoneMode = c.pheromoneMode;
         p.pheromoneContent = c.pheromoneContent;
+        p.depositTiming = c.pheromoneDepositTiming;
         p.observationFormat = c.pheromoneObservationFormat;
         p.pheromoneMinValue = c.pheromoneMinValue;
         p.pheromoneMaxValue = c.pheromoneMaxValue;
@@ -656,6 +685,8 @@ public static class WarehouseExperimentRuntime
         string id = c != null ? c.configId : "manual-inspector";
         string mode = c != null ? c.pheromoneMode.ToString() : (p != null ? p.pheromoneMode.ToString() : "Inspector");
         string content = c != null ? c.pheromoneContent.ToString() : (p != null ? p.pheromoneContent.ToString() : "Inspector");
+        string depositTiming = c != null ? c.pheromoneDepositTiming.ToString() :
+            (p != null ? p.depositTiming.ToString() : "Inspector");
         string observations = c != null ? c.pheromoneObservationFormat.ToString() : (p != null ? p.observationFormat.ToString() : "Inspector");
         string rayObservations = c != null ? c.rayObservationFormat.ToString() :
             (m != null && m.robotAgents.Count > 0 ? m.robotAgents[0].rayObservationFormat.ToString() : "Inspector");
@@ -673,6 +704,7 @@ public static class WarehouseExperimentRuntime
                   $"Trainer Seed: {GetTrainerSeed()}\n" +
                   $"Pheromone Mode: {mode}\n" +
                   $"Pheromone Content: {content}\n" +
+                  $"Pheromone Deposit Timing: {depositTiming}\n" +
                   $"Pheromone Observations: {observations}\n" +
                   $"Obstacle Observations: {rayObservations}\n" +
                   $"Evaporation Rate: {evap.ToString(CultureInfo.InvariantCulture)}\n" +
@@ -707,7 +739,21 @@ public static class WarehouseExperimentRuntime
 
         string json = BuildJson(runId, c, preset, scene);
         string path = Path.Combine(dir, "unity_experiment.json");
-        File.WriteAllText(path, json, Encoding.UTF8);
+        // Multiple ML-Agents players share this run directory. Their startup records
+        // can arrive at the same time, so wait briefly for the other writer to finish.
+        const int maxAttempts = 40;
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.WriteAllText(path, json, Encoding.UTF8);
+                break;
+            }
+            catch (IOException error) when ((error.HResult & 0xffff) == 32 && attempt < maxAttempts - 1)
+            {
+                Thread.Sleep(50);
+            }
+        }
         recorded = true;
         Debug.Log($"[ExperimentConfig] provenance saved: {path}");
     }

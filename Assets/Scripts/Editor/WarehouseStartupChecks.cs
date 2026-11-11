@@ -20,6 +20,19 @@ public static class WarehouseStartupChecks
         {
             Check(() =>
             {
+                var catalog = Resources.Load<WarehouseExperimentConfigCatalog>("WarehouseExperimentConfigCatalog");
+                Require(catalog != null, "Config catalog loads from Resources");
+                foreach (string id in new[] { "STseparated_noRw_v1", "STseparated_successRoute_v1",
+                    "STseparated_successRoute_noRw_v1" })
+                    Require(catalog.Find(id).configId == id, "Catalog selects " + id);
+                bool rejected = false;
+                try { catalog.Find("missing_config_id"); }
+                catch (InvalidOperationException) { rejected = true; }
+                Require(rejected, "Catalog rejects IDs absent from this build");
+            }, ref passed);
+
+            Check(() =>
+            {
                 var config = Config(1);
                 var first = Environment("First", config, 1);
                 var second = Environment("Second", config, 1);
@@ -54,29 +67,44 @@ public static class WarehouseStartupChecks
                 objects.Add(fresh);
                 Require(fresh.agentCount == 16 && Mathf.Approximately(fresh.penaltyAgentCollision, -5f) &&
                     Mathf.Approximately(fresh.agentContactStopSeconds, 1f) &&
-                    fresh.rayObservationFormat == WarehouseRayObservationFormat.LegacyRay12,
+                    fresh.rayObservationFormat == WarehouseRayObservationFormat.LegacyRay12 &&
+                    fresh.pheromoneDepositTiming == WarehousePheromoneDepositTiming.EveryStep,
                     "New configs preserve the legacy observation format by default");
                 var config = Config(1);
                 string legacyHash = WarehouseExperimentRuntime.GetConfigContentHash(
                     config, WarehouseExperimentRuntime.LegacyConfigFingerprintVersion);
+                string olderHash = WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.OlderConfigFingerprintVersion);
                 string previousHash = WarehouseExperimentRuntime.GetConfigContentHash(
                     config, WarehouseExperimentRuntime.PreviousConfigFingerprintVersion);
                 string currentHash = WarehouseExperimentRuntime.GetConfigContentHash(config);
+                config.pheromoneDepositTiming = WarehousePheromoneDepositTiming.OnTaskCompleted;
+                Require(legacyHash == WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.LegacyConfigFingerprintVersion) &&
+                    olderHash == WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.OlderConfigFingerprintVersion) &&
+                    previousHash == WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.PreviousConfigFingerprintVersion) &&
+                    currentHash != WarehouseExperimentRuntime.GetConfigContentHash(config),
+                    "Old fingerprints ignore deposit timing; new fingerprints include it");
+                config.pheromoneDepositTiming = WarehousePheromoneDepositTiming.EveryStep;
                 config.agentContactStopSeconds = 0f;
                 Require(legacyHash == WarehouseExperimentRuntime.GetConfigContentHash(
                     config, WarehouseExperimentRuntime.LegacyConfigFingerprintVersion),
                     "Legacy training records ignore the newly added contact rule field");
                 Require(currentHash != WarehouseExperimentRuntime.GetConfigContentHash(config),
                     "New training records fingerprint the contact rule");
-                config.rayObservationFormat = WarehouseRayObservationFormat.FrontDynamic19;
-                Require(previousHash != WarehouseExperimentRuntime.GetConfigContentHash(
-                    config, WarehouseExperimentRuntime.PreviousConfigFingerprintVersion),
-                    "Previous fingerprint still includes the contact rule");
+                Require(olderHash != WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.OlderConfigFingerprintVersion),
+                    "Version 3 fingerprints the contact rule");
                 config.agentContactStopSeconds = 1f;
-                Require(previousHash == WarehouseExperimentRuntime.GetConfigContentHash(
+                config.rayObservationFormat = WarehouseRayObservationFormat.FrontDynamic19;
+                Require(olderHash == WarehouseExperimentRuntime.GetConfigContentHash(
+                    config, WarehouseExperimentRuntime.OlderConfigFingerprintVersion) &&
+                    previousHash != WarehouseExperimentRuntime.GetConfigContentHash(
                     config, WarehouseExperimentRuntime.PreviousConfigFingerprintVersion) &&
                     currentHash != WarehouseExperimentRuntime.GetConfigContentHash(config),
-                    "Old fingerprints ignore only the new Ray format; current fingerprint records it");
+                    "Version 3 ignores Ray format; versions 4 and 5 include it");
                 Require(WarehouseRobotAgent.GetBaseObservationSize(WarehouseRayObservationFormat.LegacyRay12) == 56 &&
                     WarehouseRobotAgent.GetBaseObservationSize(WarehouseRayObservationFormat.FrontDynamic19) == 122,
                     "Observation sizes are 65/83 for legacy and 131/149 for front dynamic");
@@ -160,6 +188,58 @@ public static class WarehouseStartupChecks
                         .BrainParameters.VectorObservationSize == 131,
                     "Placed and spawned agents both receive the selected front sensor and ONNX input size");
                 Invoke("ValidateAgentRoster", g, manager, false);
+            }, ref passed);
+
+            Check(() =>
+            {
+                var g = Environment("InitialSpawn", Config(20), 0);
+                var preset = AssetDatabase.LoadAssetAtPath<WarehouseEnvironmentPreset>(
+                    "Assets/ExperimentConfigs/Experiments/Middle_2Gate_v2.asset");
+                Require(preset != null, "Middle_2Gate_v2 preset is available for spawn checks");
+                g.ApplyEnvironmentPreset(preset);
+                UnityEngine.Random.State generationRandomState = UnityEngine.Random.state;
+                g.Generate();
+                UnityEngine.Random.state = generationRandomState;
+                Require(g.GeneratedShelves.Count == 12 && g.GateCount == 2,
+                    "Initial spawn checks use the current twelve-shelf, two-gate layout");
+                var manager = Manager(g);
+                manager.slotSpacing = 1.5f;
+                var blocker = Child(g.transform.parent.gameObject, "SpawnBlocker");
+                blocker.transform.position = g.GetGates(0.3f)[0].center;
+                blocker.AddComponent<BoxCollider>().size = new Vector3(1f, 2f, 1f);
+
+                for (int i = 0; i < 16; i++)
+                    AddSpawnCheckAgent(manager, i);
+                UnityEngine.Random.State originalRandomState = UnityEngine.Random.state;
+                try
+                {
+                    UnityEngine.Random.InitState(991);
+                    float expectedNextRandom = UnityEngine.Random.value;
+                    UnityEngine.Random.InitState(991);
+                    InvokeInstance(manager, "PrepareInitialPlacements", 123);
+                    Require(Mathf.Approximately(UnityEngine.Random.value, expectedNextRandom),
+                        "Initial placement does not advance Unity's task random stream");
+                }
+                finally
+                {
+                    UnityEngine.Random.state = originalRandomState;
+                }
+                foreach (int seed in new[] { 1, 2, 123 })
+                    CheckSeededInitialPositions(manager, 16, blocker.transform.position, seed);
+
+                for (int i = 16; i < 20; i++)
+                    AddSpawnCheckAgent(manager, i);
+                foreach (int seed in new[] { 1, 2, 123 })
+                    CheckSeededInitialPositions(manager, 20, blocker.transform.position, seed);
+                Vector3[] twenty = SpawnPositions(manager);
+                Require(Array.Exists(twenty, position => Mathf.Abs(position.z + 2.5f) > 0.01f &&
+                    Mathf.Abs(position.z - 49.5f) > 0.01f),
+                    "More than eighteen Agents use an additional entrance-area row");
+
+                for (int i = 20; i < 24; i++)
+                    AddSpawnCheckAgent(manager, i);
+                foreach (int seed in new[] { 1, 2, 123 })
+                    CheckSeededInitialPositions(manager, 24, blocker.transform.position, seed);
             }, ref passed);
 
             Check(() =>
@@ -432,6 +512,20 @@ public static class WarehouseStartupChecks
                 Require(observation.Length == 27 && observation[0] > 0f &&
                         observation[1] > 0.99f && Mathf.Abs(observation[2]) < 0.001f,
                     "Directional observation contains normalized strength and local movement direction");
+
+                phero.ResetAll();
+                phero.pheromoneContent = WarehousePheromoneContent.Scalar;
+                phero.depositTiming = WarehousePheromoneDepositTiming.OnTaskCompleted;
+                Require(Mathf.Approximately(phero.StepPheromone(Vector3.zero, true, 0, 0, 1), 0f) &&
+                        Mathf.Approximately(phero.GetValue(Vector3.zero, true, 0, 0, 1), 0f),
+                    "Completion-only mode does not deposit during a step");
+                var route = new Dictionary<int, Vector3> { { 0, Vector3.right } };
+                phero.DepositCompletedRoute(route, route, 0, 0, 1);
+                Require(phero.GetValue(Vector3.zero, true, 0, 0, 1) > 0f &&
+                        phero.GetValue(Vector3.zero, false, 0, 0, 1) > 0f &&
+                        Mathf.Approximately(phero.GetValue(Vector3.zero, true, 1, 0, 1), 0f) &&
+                        phero.GetFirstVisitReward(0, true, 0, 0, 1) > 0f,
+                    "Completed route deposits into both phase maps and can reward a new visitor");
             }, ref passed);
 
             Check(() =>
@@ -535,6 +629,82 @@ public static class WarehouseStartupChecks
 
     static WarehouseTrainingManager Manager(WarehouseGenerator g) =>
         g.transform.parent.GetComponentInChildren<WarehouseTrainingManager>();
+
+    static void AddSpawnCheckAgent(WarehouseTrainingManager manager, int index)
+    {
+        var agent = UnityEngine.Object.Instantiate(manager.robotPrefab, manager.envRoot);
+        agent.name = "SpawnCheckAgent_" + index;
+        manager.robotAgents.Add(agent);
+    }
+
+    static Vector3[] SpawnPositions(WarehouseTrainingManager manager)
+    {
+        var positions = new Vector3[manager.robotAgents.Count];
+        for (int i = 0; i < positions.Length; i++)
+            positions[i] = manager.robotAgents[i].transform.position;
+        return positions;
+    }
+
+    static bool SamePositions(Vector3[] first, Vector3[] second)
+    {
+        if (first.Length != second.Length) return false;
+        for (int i = 0; i < first.Length; i++)
+            if ((first[i] - second[i]).sqrMagnitude > 0.000001f) return false;
+        return true;
+    }
+
+    static void CheckSeededInitialPositions(WarehouseTrainingManager manager, int count,
+                                            Vector3 blocker, int seed)
+    {
+        InvokeInstance(manager, "PrepareInitialPlacements", seed);
+        CheckSpawnPositions(manager, count, blocker);
+        Vector3[] positions = SpawnPositions(manager);
+        InvokeInstance(manager, "PrepareInitialPlacements", seed);
+        Require(SamePositions(positions, SpawnPositions(manager)),
+            $"{count} Agents repeat their initial positions for seed {seed}");
+
+        var pheromone = manager.GetComponent<WarehousePheromone>();
+        bool originalMode = pheromone.usePheromone;
+        try
+        {
+            pheromone.usePheromone = !originalMode;
+            InvokeInstance(manager, "PrepareInitialPlacements", seed);
+            Require(SamePositions(positions, SpawnPositions(manager)),
+                $"{count} Agents keep the same initial positions with or without pheromone");
+        }
+        finally
+        {
+            pheromone.usePheromone = originalMode;
+        }
+    }
+
+    static void CheckSpawnPositions(WarehouseTrainingManager manager, int count, Vector3 blocker)
+    {
+        Vector3[] positions = SpawnPositions(manager);
+        Require(positions.Length == count, "All configured Agents receive an initial position");
+        int south = 0;
+        int north = 0;
+        for (int i = 0; i < positions.Length; i++)
+        {
+            Vector3 position = positions[i];
+            Require(position.x >= 12.5f && position.x <= 27.5f &&
+                (position.z >= -5f && position.z <= 0f ||
+                 position.z >= 47f && position.z <= 52f),
+                "Initial positions stay inside the existing gate platforms");
+            Require((position - blocker).sqrMagnitude > 1.05f * 1.05f,
+                "Initial placement avoids a blocking collider");
+            if (position.z < 0f) south++; else north++;
+            for (int j = 0; j < i; j++)
+            {
+                Vector3 delta = position - positions[j];
+                delta.y = 0f;
+                Require(delta.sqrMagnitude > 1.05f * 1.05f,
+                    "Initial Agent capsules do not overlap");
+            }
+        }
+        Require(south == count / 2 && north == count / 2,
+            "Agents are balanced across both gates at time zero");
+    }
 
     static void Prepare(params WarehouseGenerator[] generators) =>
         Invoke("PrepareEnvironments", new List<WarehouseGenerator>(generators));

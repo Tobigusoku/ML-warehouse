@@ -64,6 +64,13 @@ public class WarehouseTrainingManager : MonoBehaviour
     {
         public int    entranceIndex;
         public Vector3 position;
+        public int    baseSlotIndex;
+    }
+
+    private struct PlacedSpawn
+    {
+        public Vector3 position;
+        public float radius;
     }
 
     // ==========================================
@@ -83,6 +90,10 @@ public class WarehouseTrainingManager : MonoBehaviour
     private List<WarehouseGenerator.WarehouseGateInfo> entrances = new List<WarehouseGenerator.WarehouseGateInfo>();
     private List<SpawnSlot>                          allSlots      = new List<SpawnSlot>();
     private HashSet<int>                             occupiedSlots = new HashSet<int>();
+    private Dictionary<WarehouseRobotAgent, SpawnSlot> pendingInitialSpawns
+        = new Dictionary<WarehouseRobotAgent, SpawnSlot>();
+    private List<WarehouseRobotAgent> deferredAgents = new List<WarehouseRobotAgent>();
+    private bool deferSpawnActivation;
     private List<ShelfUnit>                          allShelves    = new List<ShelfUnit>();
     private Dictionary<WarehouseRobotAgent, AgentState> agentStates
         = new Dictionary<WarehouseRobotAgent, AgentState>();
@@ -95,7 +106,7 @@ public class WarehouseTrainingManager : MonoBehaviour
     // ==========================================
     void Start()
     {
-        Invoke(nameof(LateInit), 0.15f);
+        LateInit();
     }
 
     void Update()
@@ -136,6 +147,8 @@ public class WarehouseTrainingManager : MonoBehaviour
         if (WarehouseExperimentRuntime.Failed) return;
         EnsureInitialized();
 
+        deferSpawnActivation = true;
+
         if (configuredAgentCount > 0)
         {
             ReconcileConfiguredAgentCount();
@@ -152,19 +165,11 @@ public class WarehouseTrainingManager : MonoBehaviour
             EnsureAgentRegistered(agent);
         }
 
-        foreach (var agent in robotAgents)
-        {
-            if (agent == null) continue;
-            if (!agentStates.ContainsKey(agent)) continue;
-
-            var state = agentStates[agent];
-            if (state.targetShelf == null && agent.targetShelfTransform == null)
-            {
-                if (WarehousePerformance.IsEnabled(p => p.DebugLog))
-                    Debug.Log($"[TrainingManager] {agent.name} の初回配置を補完");
-                ResetEpisode(agent);
-            }
-        }
+        PrepareInitialPlacements(warehouseGenerator != null ? warehouseGenerator.seed : 0);
+        foreach (WarehouseRobotAgent agent in deferredAgents)
+            agent.gameObject.SetActive(true);
+        deferredAgents.Clear();
+        deferSpawnActivation = false;
 
         WarehouseExperimentRuntime.NotifyEnvironmentReady(this);
         RuntimeReady = !WarehouseExperimentRuntime.Failed;
@@ -309,7 +314,8 @@ public class WarehouseTrainingManager : MonoBehaviour
                 float offset = i * spacing;
                 allSlots.Add(new SpawnSlot {
                     entranceIndex = e,
-                    position      = ent.center + ent.spreadDir * offset
+                    position      = ent.center + ent.spreadDir * offset,
+                    baseSlotIndex = allSlots.Count
                 });
             }
         }
@@ -342,6 +348,175 @@ public class WarehouseTrainingManager : MonoBehaviour
             occupiedSlots.Remove(state.spawnSlotIndex);
             state.spawnSlotIndex = -1;
         }
+    }
+
+    // Reserve every initial position before enabling new agents or ending a test trial.
+    void PrepareInitialPlacements(int seed)
+    {
+        EnsureInitialized();
+        pendingInitialSpawns.Clear();
+        if (robotAgents.Count == 0) return;
+
+        Physics.SyncTransforms();
+        var random = new System.Random(seed);
+        var baseCandidates = new List<SpawnSlot>[entrances.Count];
+        var extraCandidates = new List<SpawnSlot>[entrances.Count];
+        for (int gate = 0; gate < entrances.Count; gate++)
+        {
+            baseCandidates[gate] = new List<SpawnSlot>();
+            extraCandidates[gate] = new List<SpawnSlot>();
+        }
+        foreach (SpawnSlot slot in allSlots)
+            baseCandidates[slot.entranceIndex].Add(slot);
+
+        float largestRadius = 0f;
+        foreach (WarehouseRobotAgent agent in robotAgents)
+        {
+            if (agent == null || agent.GetComponent<CapsuleCollider>() == null)
+                WarehouseExperimentRuntime.Fail($"{name}: initial placement requires a CapsuleCollider on every Agent.");
+            largestRadius = Mathf.Max(largestRadius, AgentRadius(agent));
+        }
+
+        if (warehouseGenerator != null)
+        {
+            float rowOffset = Mathf.Min(Mathf.Max(0.5f, slotSpacing),
+                warehouseGenerator.entrancePlatformDepth / 2f - largestRadius - 0.1f);
+            if (rowOffset >= largestRadius * 2f + 0.05f)
+            {
+                Transform genTransform = warehouseGenerator.transform;
+                Vector3 warehouseCenter = genTransform.TransformPoint(new Vector3(
+                    warehouseGenerator.warehouseWidth / 2f, 0f,
+                    warehouseGenerator.warehouseDepth / 2f));
+                foreach (SpawnSlot slot in allSlots)
+                {
+                    Vector3 inward = warehouseCenter - entrances[slot.entranceIndex].center;
+                    inward.y = 0f;
+                    inward.Normalize();
+                    extraCandidates[slot.entranceIndex].Add(new SpawnSlot {
+                        entranceIndex = slot.entranceIndex,
+                        position = slot.position + inward * rowOffset,
+                        baseSlotIndex = -1
+                    });
+                    extraCandidates[slot.entranceIndex].Add(new SpawnSlot {
+                        entranceIndex = slot.entranceIndex,
+                        position = slot.position - inward * rowOffset,
+                        baseSlotIndex = -1
+                    });
+                }
+            }
+        }
+
+        for (int gate = 0; gate < entrances.Count; gate++)
+        {
+            Shuffle(baseCandidates[gate], random);
+            Shuffle(extraCandidates[gate], random);
+        }
+
+        var placed = new List<PlacedSpawn>();
+        int firstGate = random.Next(entrances.Count);
+        for (int i = 0; i < robotAgents.Count; i++)
+        {
+            WarehouseRobotAgent agent = robotAgents[i];
+            float radius = AgentRadius(agent);
+            bool found = false;
+            SpawnSlot chosen = default;
+            for (int offset = 0; offset < entrances.Count && !found; offset++)
+            {
+                int gate = (firstGate + i + offset) % entrances.Count;
+                found = TryTakeInitialSlot(agent, baseCandidates[gate], placed, out chosen) ||
+                        TryTakeInitialSlot(agent, extraCandidates[gate], placed, out chosen);
+            }
+            if (!found)
+                WarehouseExperimentRuntime.Fail($"{name}: cannot place {robotAgents.Count} Agents without overlap " +
+                    $"(placed {i}, gate count {entrances.Count}, normal slots {allSlots.Count}, " +
+                    $"platform depth {warehouseGenerator?.entrancePlatformDepth ?? 0f}, " +
+                    $"max Agent radius {largestRadius:F2}). Increase usable entrance-area space or reduce Agent count; " +
+                    "Agents were not stacked or removed.");
+
+            pendingInitialSpawns.Add(agent, chosen);
+            placed.Add(new PlacedSpawn { position = chosen.position, radius = radius });
+        }
+
+        foreach (var entry in pendingInitialSpawns)
+        {
+            WarehouseRobotAgent agent = entry.Key;
+            Rigidbody body = agent.GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.velocity = Vector3.zero;
+                body.angularVelocity = Vector3.zero;
+                body.position = entry.Value.position;
+            }
+            agent.transform.position = entry.Value.position;
+        }
+        Physics.SyncTransforms();
+    }
+
+    static void Shuffle(List<SpawnSlot> slots, System.Random random)
+    {
+        for (int i = slots.Count - 1; i > 0; i--)
+        {
+            int other = random.Next(i + 1);
+            SpawnSlot value = slots[i];
+            slots[i] = slots[other];
+            slots[other] = value;
+        }
+    }
+
+    static float AgentRadius(WarehouseRobotAgent agent)
+    {
+        CapsuleCollider capsule = agent.GetComponent<CapsuleCollider>();
+        Vector3 scale = agent.transform.lossyScale;
+        return capsule.radius * Mathf.Max(Mathf.Abs(scale.x), Mathf.Abs(scale.z));
+    }
+
+    bool TryTakeInitialSlot(WarehouseRobotAgent agent, List<SpawnSlot> candidates,
+                            List<PlacedSpawn> placed, out SpawnSlot chosen)
+    {
+        float radius = AgentRadius(agent);
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            SpawnSlot slot = candidates[i];
+            bool overlapsAgent = false;
+            foreach (PlacedSpawn other in placed)
+            {
+                Vector3 delta = slot.position - other.position;
+                delta.y = 0f;
+                float clearance = radius + other.radius + 0.05f;
+                if (delta.sqrMagnitude < clearance * clearance)
+                {
+                    overlapsAgent = true;
+                    break;
+                }
+            }
+            if (overlapsAgent || !IsClearOfObstacles(agent, slot.position, radius)) continue;
+
+            chosen = slot;
+            candidates.RemoveAt(i);
+            return true;
+        }
+        chosen = default;
+        return false;
+    }
+
+    bool IsClearOfObstacles(WarehouseRobotAgent agent, Vector3 position, float radius)
+    {
+        CapsuleCollider capsule = agent.GetComponent<CapsuleCollider>();
+        Vector3 scale = agent.transform.lossyScale;
+        Vector3 center = position + agent.transform.TransformVector(capsule.center);
+        float halfAxis = Mathf.Max(0f, capsule.height * Mathf.Abs(scale.y) / 2f - radius);
+        Collider[] overlaps = Physics.OverlapCapsule(center - Vector3.up * halfAxis,
+            center + Vector3.up * halfAxis, radius + 0.025f, ~0, QueryTriggerInteraction.Ignore);
+        float floorHeight = warehouseGenerator != null ? warehouseGenerator.transform.position.y : envRoot.position.y;
+        foreach (Collider overlap in overlaps)
+        {
+            WarehouseRobotAgent otherAgent = overlap.GetComponentInParent<WarehouseRobotAgent>();
+            if (otherAgent != null && robotAgents.Contains(otherAgent)) continue;
+            // The robot's low capsule may intersect the floor; only raised obstacles block a spawn.
+            if (overlap.bounds.max.y <= floorHeight + 0.05f) continue;
+            return false;
+        }
+        return true;
     }
 
     // ==========================================
@@ -378,12 +553,21 @@ public class WarehouseTrainingManager : MonoBehaviour
 
         // --- 1. スロットベースのスポーン ---
         ReleaseSlot(state);
-        int slotIdx = PickFreeSlot();
+        bool firstPlacement = pendingInitialSpawns.TryGetValue(agent, out SpawnSlot initialSlot);
+        if (firstPlacement) pendingInitialSpawns.Remove(agent);
+        int slotIdx = firstPlacement ? initialSlot.baseSlotIndex : PickFreeSlot();
 
         Vector3 spawnPos;
         int     entranceIdx;
 
-        if (slotIdx >= 0)
+        if (firstPlacement)
+        {
+            state.spawnSlotIndex = slotIdx;
+            if (slotIdx >= 0) occupiedSlots.Add(slotIdx);
+            spawnPos = initialSlot.position;
+            entranceIdx = initialSlot.entranceIndex;
+        }
+        else if (slotIdx >= 0)
         {
             state.spawnSlotIndex = slotIdx;
             occupiedSlots.Add(slotIdx);
@@ -473,7 +657,7 @@ public class WarehouseTrainingManager : MonoBehaviour
     /// <summary>
     /// Restores shared environment state, then starts every agent on a fresh task.
     /// </summary>
-    public void ResetForEvaluationTrial()
+    public void ResetForEvaluationTrial(int? initialPlacementSeed = null)
     {
         EnsureInitialized();
 
@@ -492,6 +676,8 @@ public class WarehouseTrainingManager : MonoBehaviour
 
         var phero = GetComponent<WarehousePheromone>();
         if (phero != null) phero.ResetAll();
+
+        PrepareInitialPlacements(initialPlacementSeed ?? (warehouseGenerator != null ? warehouseGenerator.seed : 0));
 
         foreach (WarehouseRobotAgent agent in robotAgents)
         {
@@ -797,7 +983,10 @@ public class WarehouseTrainingManager : MonoBehaviour
             agent.pheromone       = localPheromone;
             WarehouseExperimentRuntime.ApplyAgent(agent, config);
             robotAgents.Add(agent);
-            robotGo.SetActive(true);
+            if (deferSpawnActivation)
+                deferredAgents.Add(agent);
+            else
+                robotGo.SetActive(true);
 
             if (WarehousePerformance.IsEnabled(p => p.DebugLog))
                 Debug.Log($"[TrainingManager] Agent Prefabから '{robotGo.name}' を自動生成");

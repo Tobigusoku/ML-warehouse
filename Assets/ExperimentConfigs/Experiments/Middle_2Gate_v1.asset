@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f8b5bda9bf946284d848af894082d176, type: 3}
   m_Name: Middle_2Gate_v1
   m_EditorClassIdentifier: 
-  presetId: environment_v1
+  presetId: Middle_2Gate_v1
   warehouseWidth: 60
   warehouseDepth: 60
   wallHeight: 5

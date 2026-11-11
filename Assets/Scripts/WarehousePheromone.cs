@@ -53,12 +53,14 @@ public class WarehousePheromone : MonoBehaviour
     public float cellSize = 2f;
 
     [Header("===== フェロモン設定 =====")]
-    [Tooltip("1ステップで分泌するフェロモン量")]
+    [Tooltip("即時方式では1ステップ、成功経路方式では各フェーズの各訪問セルへ加える量")]
     public float pheroQ = 1f;
     [Tooltip("How pheromone maps are shared between tasks.")]
     public WarehousePheromoneMode pheromoneMode = WarehousePheromoneMode.TaskSeparated;
     [Tooltip("Scalar stores only intensity. Directional also stores the weighted mean movement direction.")]
     public WarehousePheromoneContent pheromoneContent = WarehousePheromoneContent.Scalar;
+    [Tooltip("EveryStep=即時分泌、OnTaskCompleted=出口到達時に成功経路を分泌")]
+    public WarehousePheromoneDepositTiming depositTiming = WarehousePheromoneDepositTiming.EveryStep;
     [Tooltip("LegacyScalar9 keeps existing ONNX input size. VectorField27 emits strength and local X/Z direction for each cell.")]
     public WarehousePheromoneObservationFormat observationFormat =
         WarehousePheromoneObservationFormat.LegacyScalar9;
@@ -332,6 +334,14 @@ public class WarehousePheromone : MonoBehaviour
         }
     }
 
+    public int GetCellIndex(Vector3 worldPos)
+    {
+        EnsureInitialized();
+        if (!initialized) return -1;
+        WorldToGrid(worldPos, out int ci, out int cj);
+        return ci < 0 ? -1 : ci * gridD + cj;
+    }
+
     // ==========================================
     //  蒸発 (FixedUpdate)
     // ==========================================
@@ -414,15 +424,55 @@ public class WarehousePheromone : MonoBehaviour
     public float StepPheromone(Vector3 worldPos, Vector3 worldMovement, bool isDelivering,
                                 int entranceIdx, int shelfIdx, int exitIdx)
     {
-        if (!usePheromone || pheromoneMode == WarehousePheromoneMode.None) return 0f;
+        if (!usePheromone || pheromoneMode == WarehousePheromoneMode.None ||
+            depositTiming != WarehousePheromoneDepositTiming.EveryStep) return 0f;
         EnsureInitialized();
         if (!initialized || shelfCount == 0) return 0f;
 
-        WorldToGrid(worldPos, out int ci, out int cj);
-        if (ci < 0) return 0f;
-
-        int cellIdx = ci * gridD + cj;
+        int cellIdx = GetCellIndex(worldPos);
+        if (cellIdx < 0) return 0f;
         if (entranceIdx < 0 || shelfIdx < 0 || exitIdx < 0) return 0f;
+        return DepositAtCell(cellIdx, worldMovement, isDelivering,
+            entranceIdx, shelfIdx, exitIdx, true);
+    }
+
+    public float GetFirstVisitReward(int cellIdx, bool isDelivering,
+                                      int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        if (!usePheromone || pheromoneMode == WarehousePheromoneMode.None ||
+            pheromoneContent != WarehousePheromoneContent.Scalar || cellIdx < 0 ||
+            cellIdx >= cellCount || entranceIdx < 0 || shelfIdx < 0 || exitIdx < 0)
+            return 0f;
+        float[] map = GetMap(isDelivering, entranceIdx, shelfIdx, exitIdx);
+        return map == null ? 0f : Mathf.Log(Mathf.Max(0f, map[cellIdx]) + 1f) * rewardScale;
+    }
+
+    public void DepositCompletedRoute(Dictionary<int, Vector3> deliveringRoute,
+                                      Dictionary<int, Vector3> returningRoute,
+                                      int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        if (!usePheromone || pheromoneMode == WarehousePheromoneMode.None ||
+            depositTiming != WarehousePheromoneDepositTiming.OnTaskCompleted ||
+            entranceIdx < 0 || shelfIdx < 0 || exitIdx < 0) return;
+        EnsureInitialized();
+        if (!initialized || shelfCount == 0) return;
+        DepositRoute(deliveringRoute, true, entranceIdx, shelfIdx, exitIdx);
+        DepositRoute(returningRoute, false, entranceIdx, shelfIdx, exitIdx);
+    }
+
+    void DepositRoute(Dictionary<int, Vector3> route, bool isDelivering,
+                      int entranceIdx, int shelfIdx, int exitIdx)
+    {
+        if (route == null) return;
+        foreach (var entry in route)
+            if (entry.Key >= 0 && entry.Key < cellCount)
+                DepositAtCell(entry.Key, entry.Value, isDelivering,
+                    entranceIdx, shelfIdx, exitIdx, false);
+    }
+
+    float DepositAtCell(int cellIdx, Vector3 worldMovement, bool isDelivering,
+                        int entranceIdx, int shelfIdx, int exitIdx, bool rewardOnDeposit)
+    {
         int mapKey = MapKey(isDelivering, entranceIdx, shelfIdx, exitIdx);
         float[] map = (isDelivering ? pheroDelivering : pheroReturning)[mapKey];
 
@@ -448,7 +498,7 @@ public class WarehousePheromone : MonoBehaviour
             return 0f;
         }
 
-        float reward = Mathf.Log(Mathf.Max(0f, prev) + 1f) * rewardScale;
+        float reward = rewardOnDeposit ? Mathf.Log(Mathf.Max(0f, prev) + 1f) * rewardScale : 0f;
         map[cellIdx] = Mathf.Clamp(prev + pheroQ, pheromoneMinValue, pheromoneMaxValue);
         return reward;
     }
