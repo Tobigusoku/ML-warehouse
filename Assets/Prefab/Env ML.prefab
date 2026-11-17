@@ -76,6 +76,7 @@ MonoBehaviour:
   pheroQ: 1
   pheromoneMode: 3
   pheromoneContent: 0
+  depositTiming: 0
   observationFormat: 0
   usePheromone: 1
   pheromoneMinValue: 0
@@ -137,7 +138,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   useExperimentConfig: 1
-  experimentConfig: {fileID: 11400000, guid: 0c0580e6dafe1774db562541b5bc1719, type: 2}
+  experimentConfig: {fileID: 11400000, guid: dc8be46474162504b852b1cdf3bc9e97, type: 2}
   experimentRunId: 
   environmentPreset: {fileID: 0}
   preset: 0
@@ -236,7 +237,7 @@ MonoBehaviour:
   baseTrialSeed: 1
   resultsFolder: results
   configSource: 0
-  manualExperimentConfig: {fileID: 0}
+  manualExperimentConfig: {fileID: 11400000, guid: 40957d33cb59d9244b3c24ac1307e5e0, type: 2}
   configFallbacks: []
   testBatchId: 
   failOnConfigFingerprintMismatch: 1

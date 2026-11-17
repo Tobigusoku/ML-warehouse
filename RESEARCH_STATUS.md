@@ -1,6 +1,6 @@
 # 研究状況: ML-Warehouse
 
-最終確認日: 2026-11-09
+最終確認日: 2026-11-17
 
 このファイルはコードと研究状況の同期用である。現状、結果、問題、次作業だけを簡潔に保つ。
 記録の更新ルールは [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md) にまとめる。
@@ -9,11 +9,41 @@
 直近のScalar比較は [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)、
 Directionalは [分割方式比較](docs/experiments/directional_granularity_front_dynamic_v1.md) を参照。
 
-## 直近の要点（2026-11-09確認時点）
+## 直近の要点（2026-11-17確認時点）
+
+- 狭い `Small_2Gate_12Shelves`・16Agentの成功経路方式で、蒸発率0.05
+  `STseparated_successRoute_v2` と0.01 `STseparated_successRoute_v3` を
+  各3 trainer seed×5 trial seedで比較。300秒の平均完了数は218.3対233.3、
+  Agent接触は217.8対272.3、棚接触は1088.7対959.0。
+  0.01の完了数はseed 1では減り、seed 3では大幅に増えた。
+  最終マップ総量は約4.45倍になったが、判断時の観測と行動への利用は未確認。
+  詳細は[成功経路方式の蒸発率比較](docs/experiments/small_2gate_success_route_evaporation_16_v1.md)。
+
+- 狭い `Small_2Gate_12Shelves`・16Agentで毎ステップ分泌 `STseparated_v6` と
+  成功経路分泌 `STseparated_successRoute_v2` を各3 trainer seed×5 trial seedで比較。
+  300秒の平均完了数は278.9対218.3、Agent接触は263.9対217.8。
+  成功経路方式は15組中2組でのみ完了が多く、完了1件あたりの棚接触は3.29対4.99。
+  最終フェロモンマップの総量も試行平均28115対1146と大きく異なるが、判断時の観測は未計測。
+  同一PresetのNoneは未比較。詳細は
+  [狭い2ゲート倉庫の分泌方式比較](docs/experiments/small_2gate_success_route_16_v1.md)。
+
+- 成功経路のみ分泌・報酬なしの `STseparated_successRoute_noRw_v1` は3 trainer seed x
+  5 trial seedの推論を完了。平均完了372.1、Agent接触144.4。旧毎ステップ分泌・報酬なしは
+  379.2、167.5。新方式の完了数はseed 1・2で多く、seed 3で大きく少ない。
+  接触は全seedで少ないが、搬送数の一貫した改善はない。詳細は
+  [成功経路のみ分泌](docs/experiments/success_route_deposition_16_v1.md)。
+
+- 成功経路のみ分泌・報酬ありの `STseparated_successRoute_v1` は3 trainer seed x
+  5 trial seedの推論を完了。平均完了381.7、Agent接触158.5。旧毎ステップ分泌
+  `STseparated_v4` は385.5、155.9。新方式の1試行が安全タイムアウトで283.94秒に
+  短縮されたため、同じ14組の300秒試行では完了384.9対386.0、接触157.3対154.9。
+  改善は一貫せず、分泌時期・分泌回数・報酬頻度の効果は分離できない。詳細は
+  [成功経路のみ分泌](docs/experiments/success_route_deposition_16_v1.md)。
 
 - `STseparated_noRw_v1` の16Agent・trainer seed 1～3 × 推論seed 1～5を完了。
   300秒の平均完了数379.2、Agent接触167.5。報酬あり `STseparated_v4` は
-  385.5、155.9。学習時の `num_envs` が2対1で異なるため、報酬の因果効果は未確定。
+  385.5、155.9。seed間の差は一貫せず、報酬の効果は未確定。学習時の
+  `num_envs` は2対1で、成績への影響は未検証。
   詳細は [フェロモン報酬有無の比較](docs/experiments/pheromone_reward_ablation_16_v1.md)。
 
 - 24Agent・None/STは各3 trainer seed x 5 trial seedの300秒推論を完了。
@@ -112,7 +142,7 @@ ST 385.5だが、seed別の優劣は一貫せず、観測とフェロモン報�
   新Config `STseparated_successRoute_v1`（報酬あり）と
   `STseparated_successRoute_noRw_v1`（報酬0）を追加。11/09にPlayer再ビルド済み。
   `taskSeparated_successRoute_v1` もConfigカタログへ登録済み。
-  成功経路・報酬ありのseed 1のみ学習済み、推論は未実施。
+  成功経路・報酬あり/なしのseed 1～3は学習・推論済み。
   条件と比較上の注意は [成功経路のみ分泌](docs/experiments/success_route_deposition_16_v1.md)。
 - `PhaseSeparated` は未使用かつ未実装だったため削除した。既存Asset互換のため `TaskSeparated=3` は維持した。
 

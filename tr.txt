@@ -2,7 +2,7 @@
 #   python tr.py
 
 runs=3
-prefix=wh_middle2Gate_ST_16_noRw_v1_
+prefix=wh_small2Gate_STseparated_successRoute_v3_
 digits=2
 start=auto
 
@@ -18,4 +18,4 @@ behavior=WarehouseRobot
 no_graphics=true
 force=false
 mlagents=mlagents-learn
-extra_args=--num-envs=2
+extra_args=--num-envs=2 --base-port=5105

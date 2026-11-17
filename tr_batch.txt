@@ -1,6 +1,6 @@
 # Use only after building a Player with WarehouseExperimentConfigCatalog.
 # Each config is trained sequentially with the same three trainer seeds.
-experiment_ids=STseparated_successRoute_v1,STseparated_successRoute_noRw_v1,taskSeparated_successRoute_v1
+experiment_ids=STseparated_v6,STseparated_successRoute_v2
 runs=3
 trainer_seeds=1,2,3
 prefix=wh_middle2Gate_

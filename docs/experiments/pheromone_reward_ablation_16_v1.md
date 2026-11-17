@@ -10,8 +10,8 @@ Configアセットのフィールド差はID・名前と `pheromoneRewardScale`�
 
 両条件ともtrainer seed 1～3、推論seed 1～5、決定的推論、固定300シミュレーション秒。
 各 `test_experiment.json` で学習時Configとの照合は一致した。
-ただし学習の `configuration.yaml` は `num_envs` が報酬なし2、報酬ありv4は1。
-この差があるため、報酬だけの厳密なアブレーションとは言えない。
+学習の `configuration.yaml` では `num_envs` が報酬なし2、報酬ありv4は1。
+推論条件は共通で、この学習時の並列数の差が成績に与えた影響は未検証。
 
 ### 観測された事実
 
@@ -38,7 +38,7 @@ Configアセットのフィールド差はID・名前と `pheromoneRewardScale`�
 
 報酬なしでも平均約379件の搬送ができ、報酬ありv4との差はseed 1で大きく、
 seed 2・3では小さい。3 seed平均の差6.3件からフェロモン報酬の有効性や不要性は断定できない。
-学習時の並列Player数も違うため、差を報酬の因果効果とみなさない。
+学習時の並列Player数の差は記録上の条件差だが、今回の成績差を説明するかは未検証。
 
 次は同じ新Player・同じ `num_envs=2`・同じseed集合で
 `STseparated_successRoute_noRw_v1` と `STseparated_successRoute_v1` を学習・推論する。
