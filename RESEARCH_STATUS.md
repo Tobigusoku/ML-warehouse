@@ -9,6 +9,13 @@
 直近のScalar比較は [3方式比較](docs/experiments/pheromone_mode_front_dynamic_v1.md)、
 Directionalは [分割方式比較](docs/experiments/directional_granularity_front_dynamic_v1.md) を参照。
 
+## 目下の作業（2026-11-19・未実装）
+
+推論時に搬送タスクごとの実際の移動経路を記録する。推論終了時に各タスクの経路を
+倉庫マップ上のトレイルとして並べて出力し、入口→棚と棚→出口を区別する。
+タスク・Agent・試行を識別できる情報も併記し、NoneとSTの動きの差や迂回を目視比較する。
+表示形式と記録の間引き方は実装時に決める。
+
 ## 直近の要点（2026-11-17確認時点）
 
 - 狭い `Small_2Gate_12Shelves`・16Agentの成功経路方式で、蒸発率0.05
